@@ -56,10 +56,22 @@ df -h / | awk 'NR==2{print $4" free"}'             # ต้อง > 5G
 
 **เกณฑ์ผ่าน:** RAM ว่าง ≥ 1.5 GB · ดิสก์ว่าง ≥ 5 GB
 
-ยังไม่มี docker:
+ยังไม่มี docker (`Command 'docker' not found`):
 ```bash
-sudo apt update && sudo apt install -y docker.io docker-compose-plugin git
-sudo usermod -aG docker "$USER"     # ต้อง logout/login ใหม่ถึงมีผล
+curl -fsSL https://get.docker.com | sudo sh     # ได้ docker + compose v2 + buildx
+sudo apt install -y git
+sudo usermod -aG docker "$USER"
+```
+
+> ⚠️ **ห้ามใช้ `apt install docker.io docker-compose-plugin`** — `docker-compose-plugin`
+> อยู่ในรีโปของ Docker เท่านั้น ไม่มีใน Ubuntu จะได้ `Unable to locate package`
+> (ของ Ubuntu ชื่อ `docker-compose-v2`) สคริปต์ข้างบนเพิ่มรีโปให้เองจึงไม่มีปัญหานี้
+
+**ต้อง logout/login ใหม่** ถึงจะได้สิทธิ์ group `docker` — ไม่งั้นทุกคำสั่งจะได้
+`permission denied while trying to connect to the Docker daemon socket`
+```bash
+exit                                # แล้ว ssh กลับเข้ามาใหม่
+docker --version && docker compose version    # ต้องได้เลขเวอร์ชันทั้งคู่
 ```
 
 ---
@@ -447,9 +459,39 @@ ss -ltnp | grep -E ':3000|:8101'
 
 ## 11. คำสั่งดูแลประจำ
 
+### 11.1 อัปเดตโค้ดใหม่
+
+```bash
+cd ~/slipingman
+git pull
+docker compose up -d --build        # ⚠️ ต้องรัน — pull เฉย ๆ ไม่มีผล
+git log --oneline -1 && curl -s localhost:3000/health
+```
+
+โค้ดถูกคัดลอกเข้า image ตอน build **container ที่รันอยู่ไม่ได้อ่านไฟล์จากดิสก์**
+`git pull` อย่างเดียวจึงไม่เปลี่ยนอะไรเลย — เป็นกับดักที่ทำให้ "แก้แล้วแต่ไม่เปลี่ยน"
+
+**ถ้า pull ขึ้น conflict** — deploy box ไม่ควรมีการแก้ไฟล์ ให้ทิ้งของฝั่ง VPS:
+```bash
+git fetch origin && git reset --hard origin/main
+```
+ปลอดภัย เพราะ `.env` `data/` `*.db` `logs/` ถูก gitignore ไว้ทั้งหมด
+และ DB ตัวจริงอยู่ใน docker volume ไม่ได้อยู่ใน working tree ด้วยซ้ำ
+
+> deploy key เป็น **read-only** → `git pull` ได้ `git push` ไม่ได้ (ตั้งใจให้เป็นแบบนั้น)
+> ถ้า pull แล้วโดนถาม username/password แปลว่า remote เป็น HTTPS ไม่ใช่ SSH:
+> ```bash
+> git remote -v      # ต้องขึ้น git@github-slipingman:...
+> git remote set-url origin git@github-slipingman:prommin01st-lang/thai-slip-ocr-line-bot.git
+> ```
+>
+> **ไม่ต้องลง GitHub CLI (`gh`)** — deploy ไม่ได้ใช้ GitHub API เลย และ `gh` ต้องใช้
+> token ที่เข้าถึงได้ทุก repo ในบัญชี ซึ่งขัดกับเหตุผลที่ใช้ deploy key ตั้งแต่แรก
+
+### 11.2 อื่น ๆ
+
 ```bash
 docker compose logs -f bot          # log สด
-docker compose up -d --build        # deploy โค้ดใหม่
 docker compose restart bot          # หลังแก้ .env
 
 # สำรอง DB — มีข้อมูลการเงินจริง ควรทำสม่ำเสมอ
