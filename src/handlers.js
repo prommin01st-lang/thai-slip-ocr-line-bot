@@ -71,7 +71,8 @@ const exportCard = (userId) => {
   if (!config.publicUrl) {
     return card({
       title: "ยังส่งออกไม่ได้", emoji: "⚠️", tone: "warn",
-      text: "ระบบยังไม่ได้ตั้งค่า PUBLIC_URL — แจ้งผู้ดูแลให้ตั้งก่อนครับ",
+      text: "ฟีเจอร์นี้ต้องมีโดเมนสาธารณะก่อน (LINE ส่งไฟล์ให้ไม่ได้ ต้องใช้ลิงก์ดาวน์โหลด)\n\n"
+          + "ผู้ดูแลตั้ง PUBLIC_URL ใน .env แล้วปุ่มจะกลับมาเอง",
     });
   }
   const { token, ttlMin } = L.createExportToken(userId);
@@ -100,7 +101,8 @@ const settingsCard = (userId) => {
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       { label: "📌 ตั้งงบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
       { label: "📌 ตั้งงบรายหมวด", fill: "งบ อาหาร ", data: "act=prompt&kind=budget" },
-      { label: "📤 ส่งออก CSV", data: "act=export" },
+      // โผล่เฉพาะเมื่อมี PUBLIC_URL — ไม่มีโดเมนสาธารณะ ลิงก์ดาวน์โหลดก็เปิดไม่ได้
+      ...(config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
       { label: "🔒 ข้อมูลของฉัน", text: "ข้อมูลของฉัน" },
     ],
   });
@@ -490,9 +492,11 @@ async function handleText(event) {
         { label: "หมวดที่จำไว้", value: `${c.hints}` },
         { label: "ให้ความยินยอม", value: u.consent_at.slice(0, 10) },
       ],
-      actions: [{ label: "📤 ส่งออก CSV", data: "act=export" },
-                { label: "⚙️ ตั้งค่า", data: "act=settings" },
-                { label: "🗑 ลบข้อมูลทั้งหมด", text: "ลบข้อมูลของฉัน" }],
+      actions: [
+        ...(config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
+        { label: "⚙️ ตั้งค่า", data: "act=settings" },
+        { label: "🗑 ลบข้อมูลทั้งหมด", text: "ลบข้อมูลของฉัน" },
+      ],
     }));
   }
 
