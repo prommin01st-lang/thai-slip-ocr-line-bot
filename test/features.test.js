@@ -7,6 +7,7 @@ import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thai
          categoryButtons } from "../src/flex.js";
 import { summaryMessage } from "../src/handlers.js";
 import { guessCategory, isCategory, labelOf } from "../src/categories.js";
+import * as RL from "../src/ratelimit.js";
 
 L.setDb(open(":memory:"));
 const U = "Ufeat000000000000000000000000001";
@@ -495,5 +496,44 @@ const sentAgain = [];
 await N.checkAlerts(B, (m) => { sentAgain.push(m); });
 assert.equal(sentAgain.length, 0, "สถานะเดิมต้องไม่เตือนซ้ำ");
 ok("สถานะเดิมไม่เตือนซ้ำ — ไม่เปลืองโควตา push");
+
+// --- rate limit ต่อผู้ใช้ ---
+//
+// queue.js คุม "ความพร้อมกัน" แต่ไม่ได้คุม "อัตรา" — คนเดียวยิงรูป 20 ใบยังเข้าคิวได้ครบ
+// แล้วยึด VPS 2 cores ไป ~3 นาที (OCR ใบละ ~8.5 วิ) ต้องปฏิเสธตั้งแต่ต้นทาง
+const R = "Urate000000000000000000000000001";
+RL._reset();
+const T0 = 1_000_000;                      // ฉีดเวลาเอง ไม่ต้องรอจริง
+
+// รูป: รัวได้ 3 ใบ ใบที่ 4 ต้องโดนกั้น
+for (let i = 1; i <= 3; i++) {
+  assert.equal(RL.take(R, "image", T0).ok, true, `ใบที่ ${i} ต้องผ่าน`);
+}
+const blocked = RL.take(R, "image", T0);
+assert.equal(blocked.ok, false, "ใบที่ 4 ต้องโดนกั้น");
+assert.ok(blocked.retryInSec > 0 && blocked.retryInSec <= 20,
+  `ต้องบอกด้วยว่ารออีกกี่วินาที (ได้ ${blocked.retryInSec})`);
+ok(`ยิงรูปรัว → ผ่าน 3 ใบ ใบที่ 4 ถูกกั้น (ลองใหม่ใน ${blocked.retryInSec} วิ)`);
+
+// รอครบเวลาแล้วต้องได้คืนทีละใบ ไม่ใช่คืนเต็มถังทันที
+assert.equal(RL.take(R, "image", T0 + 20_000).ok, true, "ผ่านไป 20 วิ ต้องได้คืน 1 ใบ");
+assert.equal(RL.take(R, "image", T0 + 20_000).ok, false, "แต่ต้องได้คืนแค่ใบเดียว");
+ok("สิทธิ์คืนทีละใบตามเวลา ไม่ใช่คืนเต็มถังพรวดเดียว");
+
+// ข้อความถูกจำกัดคนละถังกับรูป — ส่งรูปเยอะไม่ควรทำให้พิมพ์ “สรุป” ไม่ได้
+RL._reset();
+for (let i = 0; i < 3; i++) RL.take(R, "image", T0);
+assert.equal(RL.take(R, "image", T0).ok, false, "รูปเต็มโควตาแล้ว");
+assert.equal(RL.take(R, "msg", T0).ok, true, "แต่ข้อความต้องยังส่งได้");
+ok("รูปกับข้อความแยกถังกัน — ส่งรูปเยอะแล้วยังพิมพ์คำสั่งได้");
+
+// แยกตามผู้ใช้ — คนหนึ่งยิงรัวต้องไม่ทำให้อีกคนใช้ไม่ได้
+const R2 = "Urate000000000000000000000000002";
+assert.equal(RL.take(R2, "image", T0).ok, true, "ผู้ใช้อีกคนต้องไม่ถูกกระทบ");
+ok("จำกัดแยกรายคน ไม่ใช่โควตารวม");
+
+// ไม่มี userId (กลุ่ม/ห้อง) → ไม่จำกัด ไม่งั้นจะบล็อกกันเองทั้งห้อง
+for (let i = 0; i < 50; i++) assert.equal(RL.take(null, "image", T0).ok, true);
+ok("ไม่มี userId → ไม่จำกัด (กลุ่ม/ห้องแชท)");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

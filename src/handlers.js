@@ -12,6 +12,7 @@ import { config } from "./config.js";
 import * as ocr from "./ocrClient.js";
 import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
+import { take } from "./ratelimit.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          summaryBubble, txnListBubble, categoryButtons, shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
@@ -854,6 +855,21 @@ export async function handleEvent(event) {
     try { return await fn(event); }
     finally { if (userId && L.hasConsent(userId)) await notifyAfter(userId); }
   };
+
+  // จำกัดอัตราก่อนทำงานจริง — รูปแพงกว่าข้อความมาก (OCR ~8.5 วิ บน 2 cores)
+  // ต้องปฏิเสธตั้งแต่ต้นทาง ไม่ใช่ปล่อยเข้าคิวแล้วให้ทุกคนรอ (queue.js คุมคนละเรื่อง)
+  const kind = event.type === "message" && event.message?.type === "image" ? "image" : "msg";
+  const rl = take(userId, kind);
+  if (!rl.ok) {
+    // ตอบด้วย reply (ฟรี) ไม่ใช่ push — คนที่ยิงรัวไม่ควรกินโควตา 300/เดือนของทุกคน
+    return respond(event, card({
+      title: "ขอพักแป๊บนึงครับ", emoji: "🐢", tone: "warn",
+      text: kind === "image"
+        ? `อ่านสลิปใช้เวลาใบละหลายวินาที ส่งถี่เกินไปจะช้าทั้งระบบ\nลองใหม่ในอีก ${rl.retryInSec} วินาทีครับ`
+        : `ส่งเร็วเกินไปหน่อยครับ ลองใหม่ในอีก ${rl.retryInSec} วินาที`,
+      actions: [{ label: "📊 ดูสรุป", data: "act=summary" }],
+    }));
+  }
 
   if (event.type === "postback") return withAlerts(handlePostback);
   if (event.type !== "message") return;

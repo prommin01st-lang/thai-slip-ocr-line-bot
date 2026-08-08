@@ -533,21 +533,25 @@ docker compose ps                   # ดูสถานะ + healthcheck
 
 ### 11.5 สำรอง DB
 
+**อัตโนมัติ (แนะนำ) — cron ตี 3 ทุกวัน เก็บย้อนหลัง 14 วัน:**
+```
+0 20 * * * cd /path/to/slipingman && docker compose exec -T bot node scripts/backup.mjs --keep 14 >> /var/log/slipingman-backup.log 2>&1
+```
+> `20:00 UTC = 03:00 ไทย` · ไฟล์ลง `data/backups/` ใน volume จึงรอด `docker compose down`
+> **แต่ไม่รอด `down -v`** — ควรดึงออกนอกเครื่องเป็นระยะด้วย (ข้อล่าง)
+
+**ดึงไฟล์สำรองออกมานอกเครื่อง:**
 ```bash
-D=backup-$(date +%F).db
-docker compose exec -T bot node scripts/backup.mjs /tmp/bk.db && \
-docker compose cp bot:/tmp/bk.db "./$D" && \
-docker compose exec -T bot rm -f /tmp/bk.db && \
-echo "ได้ไฟล์ $D"
+docker compose exec -T bot node scripts/backup.mjs --keep 14
+docker compose cp bot:/app/data/backups ./backups
+ls -la ./backups
 ```
 
-**ตรวจว่าไฟล์สำรองใช้ได้จริง — อย่าเชื่อว่ามีไฟล์แล้วจบ:**
-```bash
-node -e "const{DatabaseSync}=require('node:sqlite');
-const d=new DatabaseSync('$D',{readOnly:true});
-console.log(d.prepare('SELECT COUNT(*) n FROM txns').get().n,'ธุรกรรม')"
-```
-ต้องได้จำนวนเท่ากับที่มีอยู่จริง
+`backup.mjs` เปิดไฟล์ที่เพิ่งสร้างขึ้นมาอ่านซ้ำแล้วพิมพ์จำนวนธุรกรรมออกมาให้เลย
+เช่น `สำรองแล้ว → data/backups/slipingman-2026-08-08.db  (42 ธุรกรรม · schema v3 · 104 KB)`
+
+**ถ้าจำนวนเป็น 0 ทั้งที่ควรมีข้อมูล ให้หยุดแล้วรายงาน** — ไฟล์สำรองที่เปิดได้แต่ว่างเปล่า
+อันตรายกว่าไม่มีสำรอง เพราะทำให้เข้าใจผิดว่ามีของอยู่จนถึงวันที่ต้องใช้จริง
 
 > ⛔ **ห้ามสำรองด้วย `cat` / `cp` ไฟล์ `.db` เฉย ๆ**
 > DB เปิดโหมด **WAL** ข้อมูลที่เพิ่งเขียนค้างอยู่ในไฟล์ `.db-wal` ยังไม่ลงไฟล์หลัก
