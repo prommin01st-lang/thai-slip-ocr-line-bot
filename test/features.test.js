@@ -355,4 +355,42 @@ assert.equal(isCategory("อาหาร"), true);
 assert.equal(isCategory("หมวดปลอม"), false, "ต้องปฏิเสธหมวดที่ไม่รู้จัก (postback ปลอมได้)");
 ok("ปุ่มเลือกหมวดถูกต้อง + กันหมวดปลอมจาก postback");
 
+// --- ลบแล้วส่งสลิปใบเดิมใหม่ต้องได้ (ผู้ใช้เจอจริง: ลบไปแล้วอัปใหม่ไม่ขึ้น) ---
+//
+// deleteTxn เป็น soft delete (status='rejected') แถวใน slips ก็ยังอยู่
+// ถ้ากันซ้ำไม่กรอง rejected → รายการที่ลบไปแล้วบล็อกการอัปใหม่ตลอดไป
+// เงินก้อนนั้นบันทึกไม่ได้อีกเลย แถมบอทตอบว่า "บันทึกไว้เรียบร้อยแล้ว" ซึ่งไม่จริง
+const D = "Udup0000000000000000000000000001";
+L.ensureUser(D, "D"); L.grantConsent(D);
+const dupSlip = slip({ ref: "DUP123456789", amount: "70.00", date: "2026-08-08", time: "16:20" });
+
+const d1 = L.recordSlip(D, dupSlip, { imageSha256: "dup-hash", direction: "out" });
+assert.equal(d1.ok, true);
+
+// ยังไม่ลบ → ต้องกันซ้ำได้ทั้ง 3 ชั้น (ของเดิมต้องไม่พัง)
+assert.equal(L.findDuplicate(D, { imageSha256: "dup-hash" })?.layer, "image");
+assert.equal(L.findDuplicate(D, { ref: "DUP123456789" })?.layer, "ref");
+assert.equal(L.findDuplicate(D, { parsed: dupSlip })?.layer, "fuzzy");
+assert.equal(L.findDuplicate(D, { imageSha256: "dup-hash" }).txnId, d1.txnId,
+  "ต้องบอกได้ว่าซ้ำกับรายการไหน ไม่ใช่แค่บอกว่าซ้ำ");
+ok("กันซ้ำ 3 ชั้นยังทำงาน + บอกได้ว่าซ้ำกับรายการไหน");
+
+// ลบแล้ว → ทั้ง 3 ชั้นต้องเลิกบล็อก
+L.deleteTxn(D, d1.txnId);
+assert.equal(L.findDuplicate(D, { imageSha256: "dup-hash" }), null, "ชั้น image ต้องเลิกบล็อก");
+assert.equal(L.findDuplicate(D, { ref: "DUP123456789" }), null, "ชั้น ref ต้องเลิกบล็อก");
+assert.equal(L.findDuplicate(D, { parsed: dupSlip }), null, "ชั้น fuzzy ต้องเลิกบล็อก");
+
+const d2 = L.recordSlip(D, dupSlip, { imageSha256: "dup-hash", direction: "out" });
+assert.equal(d2.ok, true, "ลบแล้วต้องส่งสลิปใบเดิมเข้ามาใหม่ได้");
+assert.notEqual(d2.txnId, d1.txnId);
+const sd = L.summary(D, ...monthTh);
+assert.equal(sd.expense_cents, 7000, "ยอดต้องกลับมาครบ 70 บาท ไม่เบิ้ลเป็น 140");
+ok("ลบแล้วอัปสลิปใบเดิมใหม่ได้ ยอดกลับมาครบและไม่เบิ้ล");
+
+// อัปซ้ำอีกทีทั้งที่ยังไม่ลบ → ต้องกลับมาบล็อกเหมือนเดิม
+assert.equal(L.findDuplicate(D, { imageSha256: "dup-hash" })?.txnId, d2.txnId,
+  "รายการใหม่ต้องกันซ้ำต่อได้ตามปกติ");
+ok("บันทึกใหม่แล้วกันซ้ำกลับมาทำงานเหมือนเดิม");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

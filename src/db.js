@@ -118,6 +118,19 @@ const MIGRATIONS = [
   );
   CREATE INDEX export_tokens_exp ON export_tokens (expires_at);
   `,
+  // --- migration 4: ล้างแถว slips ที่กำพร้า ---
+  //
+  // `deleteTxn()` เดิมเป็น soft delete อย่างเดียว (txns.status='rejected') ไม่ได้แตะ slips
+  // แถวที่ค้างไว้มี UNIQUE index อยู่บน (line_user_id, image_sha256) และ (line_user_id, ref)
+  // ผลคือสลิปที่ผู้ใช้ลบไปแล้ว **ส่งเข้ามาใหม่ไม่ได้อีกเลย** — เจอจริงจากผู้ใช้
+  //
+  // แก้ที่ deleteTxn() แล้วช่วยได้แค่การลบครั้งต่อ ๆ ไป ของเก่าที่ค้างอยู่ใน DB
+  // ยังบล็อกเหมือนเดิม และคราวนี้จะพังที่ constraint (ผู้ใช้เห็นแค่ "เกิดข้อผิดพลาด")
+  // แทนที่จะตอบว่าซ้ำ — จึงต้องล้างย้อนหลังด้วย
+  `
+  DELETE FROM slips WHERE txn_id IS NULL
+     OR txn_id NOT IN (SELECT id FROM txns WHERE status != 'rejected');
+  `,
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {

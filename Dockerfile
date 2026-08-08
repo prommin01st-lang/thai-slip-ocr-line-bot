@@ -11,8 +11,11 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src/ ./src/
-# weekly.mjs รันผ่าน `docker compose exec bot` (cron) → ต้องอยู่ใน image
-COPY scripts/weekly.mjs ./scripts/
+# สคริปต์ที่รันผ่าน `docker compose exec bot` → ต้องอยู่ใน image
+#   weekly.mjs  สรุปรายสัปดาห์ (cron)
+#   backup.mjs  สำรอง DB ด้วย VACUUM INTO (คัดลอกไฟล์ .db เฉย ๆ ไม่ได้ เพราะเปิด WAL)
+# ที่เหลือใน scripts/ ตั้งใจไม่เอาเข้า — รันจากเครื่อง dev ครั้งเดียวพอ (rich menu ฯลฯ)
+COPY scripts/weekly.mjs scripts/backup.mjs ./scripts/
 
 # data/ เก็บ SQLite — ต้องเป็นของ user ที่รัน ไม่งั้นเขียนไม่ได้
 RUN mkdir -p /app/data && chown -R node:node /app

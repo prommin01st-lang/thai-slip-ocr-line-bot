@@ -148,16 +148,25 @@ export function occurredAt(parsed) {
  */
 export function findDuplicate(userId, { imageSha256 = null, ref = null, parsed = null } = {}) {
   const d = db();
-  const join = `SELECT s.*, t.id AS txn_id_ FROM slips s LEFT JOIN txns t ON t.id = s.txn_id`;
+  // ⚠️ ต้อง INNER JOIN + กรอง rejected ทั้ง 3 ชั้น
+  //
+  // deleteTxn() เป็น soft delete (status='rejected') แถวใน slips ก็ยังอยู่
+  // ถ้าไม่กรอง รายการที่ผู้ใช้ "ลบ" ไปแล้วจะยังบล็อกการส่งสลิปใบเดิมซ้ำอยู่ตลอดไป
+  // → ลบผิดแล้วอัปใหม่ไม่ได้เลย เงินก้อนนั้นบันทึกไม่ได้อีกเลยจนกว่าจะแก้ DB เอง
+  // (ผู้ใช้เจอจริง แล้วบอทยังตอบว่า "บันทึกไว้เรียบร้อยแล้ว" ซึ่งไม่จริง)
+  //
+  // INNER JOIN สำคัญ: slip ที่ txn ถูกลบถาวรไปแล้ว (กำพร้า) ต้องไม่บล็อกเหมือนกัน
+  const join = `SELECT s.*, t.id AS txn_id_, t.amount_cents, t.occurred_at, t.direction
+                FROM slips s JOIN txns t ON t.id = s.txn_id AND t.status != 'rejected'`;
 
   if (imageSha256) {
     const hit = d.prepare(`${join} WHERE s.line_user_id = ? AND s.image_sha256 = ?`)
       .get(userId, imageSha256);
-    if (hit) return { layer: "image", slip: hit };
+    if (hit) return { layer: "image", slip: hit, txn: hit, txnId: hit.txn_id_ };
   }
   if (ref) {
     const hit = d.prepare(`${join} WHERE s.line_user_id = ? AND s.ref = ?`).get(userId, ref);
-    if (hit) return { layer: "ref", slip: hit };
+    if (hit) return { layer: "ref", slip: hit, txn: hit, txnId: hit.txn_id_ };
   }
   if (parsed) {
     const cents = toCents(parsed.amount);
@@ -167,9 +176,10 @@ export function findDuplicate(userId, { imageSha256 = null, ref = null, parsed =
       const hit = d.prepare(`
         SELECT t.* FROM txns t
         WHERE t.line_user_id = ? AND t.amount_cents = ? AND t.occurred_at IS NOT NULL
+          AND t.status != 'rejected'
           AND ABS(strftime('%s', t.occurred_at) - strftime('%s', ?)) <= 120
         LIMIT 1`).get(userId, cents, at);
-      if (hit) return { layer: "fuzzy", txn: hit };
+      if (hit) return { layer: "fuzzy", txn: hit, txnId: hit.id };
     }
   }
   return null;
@@ -366,10 +376,26 @@ export function getTxn(userId, txnId) {
  *
  * "ลบข้อมูลของฉัน" ยังลบจริงทั้งหมดตามเดิม — คนละเรื่องกัน
  */
+/**
+ * ลบรายการ — `txns` เป็น soft delete แต่ **`slips` ต้องลบจริง**
+ *
+ * เหตุผลที่ต้องลบแถว slips ด้วย ไม่ใช่แค่กรอง rejected ตอนค้นหา:
+ * มี UNIQUE index บน (line_user_id, image_sha256) และ (line_user_id, ref)
+ * ถ้าแถวเก่ายังอยู่ พอผู้ใช้ส่งสลิปใบเดิมเข้ามาใหม่ INSERT จะชน constraint
+ * แล้วโยน error ออกมากลางทาง — ผู้ใช้เห็นแค่ "เกิดข้อผิดพลาด" โดยไม่รู้สาเหตุ
+ *
+ * ลบทิ้งได้ไม่เสียอะไร: แถวนี้มีไว้กันซ้ำกับเก็บ metadata ของสลิป ซึ่งไม่มีความหมาย
+ * แล้วเมื่อรายการที่มันอ้างถึงถูกลบไป — และการทิ้ง hash ของรูปที่ผู้ใช้ลบแล้ว
+ * ก็ตรงกับเจตนาของ PDPA มากกว่าเก็บไว้เฉย ๆ
+ */
 export function deleteTxn(userId, txnId) {
-  const info = db().prepare(
+  const d = db();
+  const info = d.prepare(
     "UPDATE txns SET status='rejected' WHERE id=? AND line_user_id=? AND status!='rejected'")
     .run(txnId, userId);
+  if (info.changes > 0) {
+    d.prepare("DELETE FROM slips WHERE txn_id = ? AND line_user_id = ?").run(txnId, userId);
+  }
   return info.changes > 0;
 }
 

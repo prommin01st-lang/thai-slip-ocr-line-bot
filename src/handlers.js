@@ -249,10 +249,21 @@ async function handleImage(event) {
     if (consented) {
       const dup = L.findDuplicate(userId, { imageSha256: hash });
       if (dup) {
+        // ต้องบอกว่าซ้ำกับ "รายการไหน" ไม่ใช่แค่บอกว่าซ้ำ
+        // ผู้ใช้จะได้ตรวจได้ว่ามันมีอยู่จริง และกดลบ/แก้ได้ทันทีถ้าไม่ใช่ที่คิด
+        const t = dup.txnId ? L.getTxn(userId, dup.txnId) : null;
         return respond(event, card({
           title: "สลิปใบนี้เคยส่งมาแล้ว", emoji: "🔁", tone: "info",
           text: "บันทึกไว้เรียบร้อยแล้ว ไม่นับซ้ำให้นะครับ",
-          actions: [{ label: "🧾 ดูรายการล่าสุด", text: "รายการ" }],
+          rows: t ? [
+            { label: "ตรงกับรายการ", value: `#${t.id}` },
+            { label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
+            { label: "ลงวันที่", value: t.occurred_at ?? "ตามวันที่บันทึก" },
+          ] : [],
+          actions: [
+            ...(t ? [{ label: `🗑 ลบรายการ #${t.id}`, data: `act=del&id=${t.id}` }] : []),
+            { label: "🧾 ดูรายการล่าสุด", data: "act=list", primary: true },
+          ],
         }));
       }
     }

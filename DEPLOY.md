@@ -527,10 +527,36 @@ docker compose exec -T bot sh -c 'echo ${LINE_CHANNEL_ACCESS_TOKEN:+ตั้ง
 
 ```bash
 docker compose logs -f bot          # log สด
-
-# สำรอง DB — มีข้อมูลการเงินจริง ควรทำสม่ำเสมอ
-docker compose exec -T bot cat /app/data/slipingman.db > backup-$(date +%F).db
+docker compose restart bot          # รีสตาร์ตเฉย ๆ (ไม่โหลด .env ใหม่ — ดู 11.3)
+docker compose ps                   # ดูสถานะ + healthcheck
 ```
+
+### 11.5 สำรอง DB
+
+```bash
+D=backup-$(date +%F).db
+docker compose exec -T bot node scripts/backup.mjs /tmp/bk.db && \
+docker compose cp bot:/tmp/bk.db "./$D" && \
+docker compose exec -T bot rm -f /tmp/bk.db && \
+echo "ได้ไฟล์ $D"
+```
+
+**ตรวจว่าไฟล์สำรองใช้ได้จริง — อย่าเชื่อว่ามีไฟล์แล้วจบ:**
+```bash
+node -e "const{DatabaseSync}=require('node:sqlite');
+const d=new DatabaseSync('$D',{readOnly:true});
+console.log(d.prepare('SELECT COUNT(*) n FROM txns').get().n,'ธุรกรรม')"
+```
+ต้องได้จำนวนเท่ากับที่มีอยู่จริง
+
+> ⛔ **ห้ามสำรองด้วย `cat` / `cp` ไฟล์ `.db` เฉย ๆ**
+> DB เปิดโหมด **WAL** ข้อมูลที่เพิ่งเขียนค้างอยู่ในไฟล์ `.db-wal` ยังไม่ลงไฟล์หลัก
+> คัดลอกไฟล์เดียวจะได้ภาพเก่า **โดยไม่มีอะไรฟ้อง** — ไฟล์เปิดได้ ตารางครบ
+> แต่ข้อมูลขาดไปเงียบ ๆ (วัดจริงแล้วต่างกันถึงระดับ schema version)
+> คัดลอกครบทั้ง 3 ไฟล์ก็ยังไม่ปลอดภัย ถ้าบอทเขียนอยู่ระหว่างคัดลอกจะได้ภาพครึ่ง ๆ กลาง ๆ
+>
+> `scripts/backup.mjs` ใช้ `VACUUM INTO` ซึ่งได้ภาพ ณ จุดเดียวกันทั้งไฟล์
+> ทำได้ขณะบอทยังรันอยู่ ไม่ต้องหยุดบริการ
 
 สรุปรายสัปดาห์ (ตัวเลือก) — cron เช้าวันจันทร์ 08:00 ไทย = 01:00 UTC:
 ```
