@@ -443,4 +443,49 @@ for (const [id, dir] of dirBefore) {
 }
 ok("ลืมบัญชีที่จำไว้ได้ → กลับมาถามใหม่ โดยของเก่าไม่กระทบ");
 
+// --- แจ้งเตือนงบต้องยิงตอนที่ยอด "ข้ามเส้น" จริง ๆ ไม่ใช่เฉพาะตอนบันทึกรายการ ---
+//
+// ผู้ใช้เจอจริง: ใช้ไป 937 จากงบ 1,000 (94%) แล้วไม่มีอะไรเกิดขึ้นเลย
+// เพราะ notifyAfter() ถูกเรียกแค่หลังบันทึกสลิป/พิมพ์รายการ แต่จังหวะที่ข้ามเส้น
+// คือตอน "ตั้งงบ" (ใช้ไปแล้ว 94% ค่อยตั้งงบ) และตอน "กดเลือกหมวด"
+// (รายการเพิ่งเข้างบหมวดนั้นตอนนั้นเอง) — ทั้งสองทางเดิมเงียบสนิท
+const B = "Ubudg000000000000000000000000001";
+L.ensureUser(B, "B"); L.grantConsent(B);
+const [bf, bt] = N.thisMonth();
+// โควตา push เป็นของ **ทั้งแชนแนล** ไม่ใช่รายคน — เทสข้อ 6 ข้างบนเผาจนหมดไปแล้ว
+// ถ้าไม่ล้าง เทสนี้จะได้ skipped:"quota" แล้วเข้าใจผิดว่าแจ้งเตือนพัง
+L.db().prepare("DELETE FROM push_log").run();
+
+// ใช้เงินก่อน แล้วค่อยตั้งงบ — ลำดับเดียวกับที่ผู้ใช้ทำ
+const bx = L.recordEntry(B, { direction: "out", amountCents: 93700, note: "กาแฟ" });
+assert.equal(L.getTxn(B, bx.txnId).category, "อาหาร");
+assert.equal(L.budgetStatus(B, bf, bt).length, 0, "ยังไม่ตั้งงบ ต้องไม่มีอะไรให้เตือน");
+
+L.setBudget(B, 100000, "อาหาร");                       // งบ 1,000 ใช้ไป 937 = 94%
+const bstat = L.budgetStatus(B, bf, bt).find((s) => s.category === "อาหาร");
+assert.ok(bstat, "94% ต้องเข้าเกณฑ์เตือน (warnAt = 80%)");
+assert.equal(bstat.over, false, "94% ยังไม่เกิน — ต้องเป็นเตือนแบบ ‘ใกล้เต็ม’");
+assert.equal(Math.round(bstat.ratio * 100), 94);
+
+const sentBudget = [];
+const rBudget = await N.checkAlerts(B, (m) => { sentBudget.push(m); });
+assert.equal(rBudget.sent, 1, `ต้องเตือน 1 ข้อความ (ได้ ${JSON.stringify(rBudget)})`);
+assert.match(sentBudget[0].text, /ใกล้เต็ม/, "ต้องบอกว่าใกล้เต็ม ไม่ใช่บอกว่าเกิน");
+assert.match(sentBudget[0].text, /937\.00 \/ 1,000\.00/, "ต้องบอกตัวเลขจริง");
+ok(`เตือนตอนใกล้เต็ม: "${sentBudget[0].text.split("\n")[0]}"`);
+
+// พอเกินจริง ต้องเตือนอีกครั้ง — คนละชนิดกับ 'ใกล้เต็ม' จึงไม่ถูกกันซ้ำ
+L.recordEntry(B, { direction: "out", amountCents: 20000, note: "กาแฟ" });
+const sentOver = [];
+await N.checkAlerts(B, (m) => { sentOver.push(m); });
+assert.equal(sentOver.length, 1, "ใกล้เต็มแล้วเกิน ต้องเตือนได้อีกครั้ง");
+assert.match(sentOver[0].text, /เกินแล้ว/);
+ok(`เตือนซ้ำตอนเกินจริง: "${sentOver[0].text.split("\n")[0]}"`);
+
+// แต่เรียกซ้ำสถานะเดิมต้องไม่ spam (โควตา push มีแค่ 300/เดือน)
+const sentAgain = [];
+await N.checkAlerts(B, (m) => { sentAgain.push(m); });
+assert.equal(sentAgain.length, 0, "สถานะเดิมต้องไม่เตือนซ้ำ");
+ok("สถานะเดิมไม่เตือนซ้ำ — ไม่เปลืองโควตา push");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

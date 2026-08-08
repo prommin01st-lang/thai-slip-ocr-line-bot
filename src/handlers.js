@@ -696,11 +696,24 @@ async function handleText(event) {
     const cents = L.toCents(m[2].includes(".") ? m[2] : `${m[2]}.00`);
     if (cents === null) return respond(event, errorMessage("อ่านยอดไม่ออกครับ"));
     L.setBudget(userId, cents, cat);
+    // บอกสถานะ ณ ตอนนี้เลย — ตั้งงบทั้งที่ใช้ไปแล้ว 94% แต่การ์ดตอบว่า
+    // "จะเตือนเมื่อใช้ถึง 80%" เฉย ๆ ทำให้ผู้ใช้นั่งรอการเตือนที่ควรมาตั้งแต่วินาทีนั้น
+    const [bf, bt] = thisMonth();
+    const now = L.budgetStatus(userId, bf, bt, 0).find((s) => s.category === cat);
+    const pct = now ? Math.round(now.ratio * 100) : 0;
     return respond(event, card({
-      title: "ตั้งงบแล้ว", emoji: "📌", tone: "success",
+      title: "ตั้งงบแล้ว", emoji: "📌",
+      tone: now?.over ? "danger" : pct >= 80 ? "warn" : "success",
       big: L.fromCents(cents), bigLabel: cat === "*" ? "งบรวมทั้งเดือน" : `งบหมวด “${cat}”`,
-      text: "จะเตือนเมื่อใช้ถึง 80% และตอนเกิน",
-      actions: [{ label: "📌 ดูงบทั้งหมด", text: "งบ" }],
+      rows: now ? [{ label: "ใช้ไปแล้วเดือนนี้",
+                     value: `${L.fromCents(now.used_cents)} บาท (${pct}%)`, strong: now.over }] : [],
+      text: now?.over
+        ? `เกินงบไปแล้ว ${L.fromCents(now.used_cents - cents)} บาทครับ`
+        : pct >= 80
+          ? `เหลืออีก ${L.fromCents(cents - now.used_cents)} บาท`
+          : "จะเตือนเมื่อใช้ถึง 80% และตอนเกิน",
+      actions: [{ label: "📌 ดูงบทั้งหมด", text: "งบ" },
+                { label: "📊 ดูสรุป", data: "act=summary" }],
     }));
   }
 
@@ -716,8 +729,12 @@ async function handleText(event) {
     }
     const [from, to] = thisMonth();
     const st = L.budgetStatus(userId, from, to, 0);   // 0 = เอาทุกงบมาแสดง
+    const worst = st.reduce((a, b) => (b.ratio > (a?.ratio ?? -1) ? b : a), null);
     return respond(event, card({
-      title: "งบเดือนนี้", emoji: "📌", tone: "info",
+      // สีการ์ดต้องสะท้อนสถานะจริง — 94% ที่แสดงด้วยโทน info เดียวกับตอน 10%
+      // ทำให้ผู้ใช้เลื่อนผ่านโดยไม่ทันสังเกต (เจอจริง: ตั้งใจดูว่าเกินยัง แต่ไม่เห็น)
+      title: "งบเดือนนี้", emoji: "📌",
+      tone: worst?.over ? "danger" : worst?.ratio >= 0.8 ? "warn" : "info",
       rows: bs.map((b) => {
         const s = st.find((x) => x.category === b.category);
         const pct = s ? Math.round(s.ratio * 100) : 0;
@@ -727,8 +744,11 @@ async function handleText(event) {
           strong: s?.over,
         };
       }),
-      notes: st.filter((s) => s.over)
-               .map((s) => `${s.category === "*" ? "งบรวม" : s.category} เกินแล้ว`),
+      notes: st.filter((s) => s.ratio >= 0.8).map((s) =>
+        `${s.category === "*" ? "งบรวม" : s.category} ` +
+        (s.over
+          ? `เกินแล้ว ${L.fromCents(s.used_cents - s.limit_cents)} บาท`
+          : `ใกล้เต็ม เหลืออีก ${L.fromCents(s.limit_cents - s.used_cents)} บาท`)),
       actions: [{ label: "📌 แก้งบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
                 { label: "📊 ดูสรุป", data: "act=summary" }],
     }));
@@ -776,7 +796,8 @@ async function handleText(event) {
   if (entry) {
     const rec = L.recordEntry(userId, entry);
     if (rec.ok) {
-      try {
+      // ไม่ต้องเรียก notifyAfter ตรงนี้แล้ว — withAlerts ใน handleEvent ครอบให้ทั้ง handleText
+      {
         const cat = L.getTxn(userId, rec.txnId)?.category ?? null;
         await respond(event, card({
           title: "บันทึกแล้ว", emoji: rec.direction === "in" ? "💰" : "💸", tone: "success",
@@ -798,8 +819,6 @@ async function handleText(event) {
             { label: "📊 ดูสรุป", data: "act=summary" },
           ],
         }));
-      } finally {
-        await notifyAfter(userId);
       }
       return;
     }
@@ -822,11 +841,25 @@ export async function handleEvent(event) {
       consentCard(),
     ]);
   }
-  if (event.type === "postback") return handlePostback(event);
+  // ตรวจแจ้งเตือน **หลังทุก postback และทุกข้อความ** ไม่ใช่เฉพาะตอนบันทึกรายการ
+  //
+  // เดิมเรียก notifyAfter() แค่ 2 จุด (หลังบันทึกสลิป / หลังพิมพ์รายการ) แต่จังหวะที่
+  // ยอด "ข้ามเส้นงบ" จริง ๆ มักอยู่ที่อื่น — ตั้งงบทั้งที่ใช้ไป 94% แล้ว · กดเลือกหมวด
+  // ให้รายการที่มีอยู่ (เพิ่งเข้างบหมวดนั้นตอนนี้เอง) · ยืนยันว่าเป็นรายจ่าย · แก้ยอด
+  // ทุกกรณีเหล่านี้เดิมเงียบสนิท ผู้ใช้ตั้งงบแล้วรอเตือนซึ่งไม่มีวันมา
+  //
+  // ครอบไว้ที่นี่จุดเดียวแทนที่จะไปโรยตามแต่ละ handler — handler ใหม่ที่เพิ่มทีหลัง
+  // จะได้ไม่ลืม และ claimAlert กันเตือนซ้ำอยู่แล้วจึงไม่เปลืองโควตา push
+  const withAlerts = async (fn) => {
+    try { return await fn(event); }
+    finally { if (userId && L.hasConsent(userId)) await notifyAfter(userId); }
+  };
+
+  if (event.type === "postback") return withAlerts(handlePostback);
   if (event.type !== "message") return;
 
   if (event.message.type === "image") return handleImage(event);
-  if (event.message.type === "text") return handleText(event);
+  if (event.message.type === "text") return withAlerts(handleText);
 
   return respond(event, card({
     title: "รับเฉพาะรูปและข้อความ", emoji: "📸", tone: "info",
