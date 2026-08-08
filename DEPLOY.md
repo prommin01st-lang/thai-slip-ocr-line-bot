@@ -356,8 +356,10 @@ webhook ของ LINE เป็น POST + JSON ซึ่ง**ควร**ผ่�
 ### หลังได้ URL แล้ว
 ```bash
 echo "PUBLIC_URL=https://<URL ที่ได้จาก 7A/7B/7C>" >> .env
-docker compose restart bot                 # ปุ่มส่งออก CSV จะกลับมา
+docker compose up -d                       # ปุ่มส่งออก CSV จะกลับมา
 ```
+
+> ⚠️ ต้องเป็น `up -d` **ห้ามใช้ `restart`** — ดูข้อ 11.3
 
 ### firewall
 ```bash
@@ -488,11 +490,43 @@ git fetch origin && git reset --hard origin/main
 > **ไม่ต้องลง GitHub CLI (`gh`)** — deploy ไม่ได้ใช้ GitHub API เลย และ `gh` ต้องใช้
 > token ที่เข้าถึงได้ทุก repo ในบัญชี ซึ่งขัดกับเหตุผลที่ใช้ deploy key ตั้งแต่แรก
 
-### 11.2 อื่น ๆ
+### 11.2 แก้ค่าใน `.env`
+
+```bash
+cd ~/slipingman
+nano .env                           # แก้ค่า แล้ว Ctrl+O, Enter, Ctrl+X
+docker compose up -d                # ⚠️ ต้องเป็น up -d ไม่ใช่ restart
+```
+
+**ตรวจว่าค่าเข้าไปถึง container จริง** (ดูชื่อตัวแปร ไม่ใช่ค่า):
+```bash
+docker compose exec -T bot printenv | grep -E '^(PORT|OCR_ENDPOINT|PUBLIC_URL)='
+docker compose exec -T bot sh -c 'echo ${LINE_CHANNEL_ACCESS_TOKEN:+ตั้งแล้ว}'
+```
+
+`.env` อยู่ใน `.gitignore` → `git pull` ไม่มีวันทับ แก้ได้อิสระ
+
+### 11.3 ⚠️ `restart` ไม่โหลดค่าใหม่จาก `.env`
+
+**วัดจริงมาแล้ว** — แก้ `.env` แล้วสั่ง `restart` ค่าในเครื่องยังเป็นของเก่า:
+
+| คำสั่ง | ค่าใน container |
+|---|---|
+| แก้ `.env` → `docker compose restart` | **ค่าเดิม** ❌ |
+| แก้ `.env` → `docker compose up -d` | ค่าใหม่ ✅ |
+
+`restart` แค่สั่ง stop/start container เดิมที่ env ถูก freeze ไว้ตอนสร้างแล้ว
+ส่วน `up -d` จะเทียบ config ใหม่กับของเดิม เห็นว่าต่างจึง **สร้าง container ใหม่**
+
+อันตรายเพราะ**ไม่มี error ให้เห็นเลย** — คำสั่งขึ้นเขียวสวยงาม แต่ค่าไม่เปลี่ยน
+แล้วไปหลงแก้ที่อื่นแทน เจอบ่อยตอนตั้ง `PUBLIC_URL` แล้วปุ่ม CSV ไม่โผล่
+
+`restart` ยังใช้ได้ตามปกติเมื่อ**ไม่ได้แก้ config** เช่นอยากรีเซ็ตสถานะในหน่วยความจำ
+
+### 11.4 อื่น ๆ
 
 ```bash
 docker compose logs -f bot          # log สด
-docker compose restart bot          # หลังแก้ .env
 
 # สำรอง DB — มีข้อมูลการเงินจริง ควรทำสม่ำเสมอ
 docker compose exec -T bot cat /app/data/slipingman.db > backup-$(date +%F).db
