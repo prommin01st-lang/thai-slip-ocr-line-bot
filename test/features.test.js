@@ -89,8 +89,13 @@ L.setBudget(U, toCents("100.00"));            // งบรวม 100 แต่�
 const sentA = [];
 const rA = await N.checkAlerts(U, (m) => { sentA.push(m); });
 assert.equal(rA.sent, 1, `ควรเตือนงบเกิน 1 ข้อความ (ได้ ${JSON.stringify(rA)})`);
-assert.match(sentA[0].text, /เกิน/, "ข้อความต้องบอกว่าเกินงบ");
-ok(`เตือนงบเกินได้: "${sentA[0].text.split("\n")[0]}"`);
+// แจ้งเตือนต้องเป็นการ์ด ไม่ใช่ข้อความล้วน — และ altText ต้องมีตัวเลขครบ
+// เพราะนั่นคือสิ่งเดียวที่ผู้ใช้เห็นบน notification ล็อกสกรีน
+assert.equal(sentA[0].type, "flex", "แจ้งเตือนงบต้องเป็นการ์ด");
+assert.match(sentA[0].altText, /เกิน/, "altText ต้องบอกว่าเกินงบ");
+assert.match(sentA[0].altText, /\d/, "altText ต้องมีตัวเลข ไม่ใช่บอกแค่ว่าเกิน");
+validate(sentA[0].contents, "budgetAlert");
+ok(`เตือนงบเกินได้: "${sentA[0].altText}"`);
 
 // เรียกซ้ำในเดือนเดิม ต้องไม่เตือนอีก
 const rDup = await N.checkAlerts(U, () => { throw new Error("ไม่ควรถูกเรียก"); });
@@ -470,17 +475,20 @@ assert.equal(Math.round(bstat.ratio * 100), 94);
 const sentBudget = [];
 const rBudget = await N.checkAlerts(B, (m) => { sentBudget.push(m); });
 assert.equal(rBudget.sent, 1, `ต้องเตือน 1 ข้อความ (ได้ ${JSON.stringify(rBudget)})`);
-assert.match(sentBudget[0].text, /ใกล้เต็ม/, "ต้องบอกว่าใกล้เต็ม ไม่ใช่บอกว่าเกิน");
-assert.match(sentBudget[0].text, /937\.00 \/ 1,000\.00/, "ต้องบอกตัวเลขจริง");
-ok(`เตือนตอนใกล้เต็ม: "${sentBudget[0].text.split("\n")[0]}"`);
+assert.equal(sentBudget[0].type, "flex", "ต้องเป็นการ์ด");
+assert.match(sentBudget[0].altText, /ใกล้เต็ม/, "ต้องบอกว่าใกล้เต็ม ไม่ใช่บอกว่าเกิน");
+assert.match(sentBudget[0].altText, /937\.00 \/ 1,000\.00/, "ต้องบอกตัวเลขจริง");
+assert.equal(sentBudget[0].contents.header.contents[0].text.includes("ใกล้เต็ม"), true);
+ok(`เตือนตอนใกล้เต็ม (การ์ด): "${sentBudget[0].altText}"`);
 
 // พอเกินจริง ต้องเตือนอีกครั้ง — คนละชนิดกับ 'ใกล้เต็ม' จึงไม่ถูกกันซ้ำ
 L.recordEntry(B, { direction: "out", amountCents: 20000, note: "กาแฟ" });
 const sentOver = [];
 await N.checkAlerts(B, (m) => { sentOver.push(m); });
 assert.equal(sentOver.length, 1, "ใกล้เต็มแล้วเกิน ต้องเตือนได้อีกครั้ง");
-assert.match(sentOver[0].text, /เกินแล้ว/);
-ok(`เตือนซ้ำตอนเกินจริง: "${sentOver[0].text.split("\n")[0]}"`);
+assert.match(sentOver[0].altText, /เกินแล้ว/);
+assert.equal(sentOver[0].type, "flex");
+ok(`เตือนซ้ำตอนเกินจริง (การ์ด): "${sentOver[0].altText}"`);
 
 // แต่เรียกซ้ำสถานะเดิมต้องไม่ spam (โควตา push มีแค่ 300/เดือน)
 const sentAgain = [];

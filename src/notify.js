@@ -7,6 +7,7 @@
 //   3. เตือนเฉพาะเรื่องที่คุ้มค่าโควตาจริง (งบเกิน / บิลที่ยังไม่จ่าย)
 // ส่วนการ "ขอดูสรุป" ผู้ใช้พิมพ์เอาเองได้ = reply = ฟรี ไม่แตะโควตา
 import * as L from "./ledger.js";
+import { card } from "./flex.js";
 import { fromCents } from "./db.js";
 
 // กันไม่ให้ใช้จนหมดเกลี้ยง — เหลือไว้ให้ reply-fallback ตอนคิวยาวด้วย
@@ -54,14 +55,30 @@ function budgetMessages(userId, from, to) {
     const kind = `budget:${b.category}:${b.over ? "over" : "near"}`;
     if (!L.claimAlert(userId, kind, from.slice(0, 7))) continue;   // เตือนไปแล้วเดือนนี้
     const name = b.category === "*" ? "งบรวมเดือนนี้" : `งบหมวด “${b.category}”`;
-    out.push({
-      type: "text",
-      text: b.over
-        ? `🚨 ${name} เกินแล้ว\nใช้ไป ${fromCents(b.used_cents)} / ${fromCents(b.limit_cents)} บาท ` +
-          `(${Math.round(b.ratio * 100)}%)`
-        : `⚠️ ${name} ใกล้เต็ม\nใช้ไป ${fromCents(b.used_cents)} / ${fromCents(b.limit_cents)} บาท ` +
-          `(${Math.round(b.ratio * 100)}%)`,
-    });
+    const pct = Math.round(b.ratio * 100);
+    const diff = fromCents(Math.abs(b.limit_cents - b.used_cents));
+    out.push(card({
+      title: `${name} ${b.over ? "เกินแล้ว" : "ใกล้เต็ม"}`,
+      emoji: b.over ? "🚨" : "⚠️",
+      tone: b.over ? "danger" : "warn",
+      big: fromCents(b.used_cents), bigLabel: "ใช้ไปแล้วเดือนนี้",
+      rows: [
+        { label: "งบที่ตั้งไว้", value: `${fromCents(b.limit_cents)} บาท` },
+        { label: b.over ? "เกินไป" : "เหลืออีก", value: `${diff} บาท`, strong: b.over },
+        { label: "ใช้ไปแล้ว", value: `${pct}%` },
+      ],
+      actions: [
+        { label: "📊 ดูสรุป", data: "act=summary", primary: true },
+        { label: "🧾 ดูรายการล่าสุด", data: "act=list" },
+        // fillInText: เติมคำสั่งให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลขใหม่
+        { label: "📌 แก้งบนี้", data: "act=prompt&kind=budget",
+          fill: b.category === "*" ? "งบ " : `งบ ${b.category} ` },
+      ],
+      // altText คือสิ่งที่โผล่ใน notification บนล็อกสกรีน — ต้องมีตัวเลขครบในบรรทัดเดียว
+      // ไม่งั้นผู้ใช้ต้องเปิดแอปถึงจะรู้ว่าเกินไปเท่าไหร่ ซึ่งเสียจุดประสงค์ของการเตือน
+      altText: `${name} ${b.over ? "เกินแล้ว" : "ใกล้เต็ม"} — ` +
+               `ใช้ไป ${fromCents(b.used_cents)} / ${fromCents(b.limit_cents)} บาท (${pct}%)`,
+    }));
   }
   return out;
 }
@@ -70,12 +87,17 @@ function recurringMessages(userId, monthStart) {
   const due = L.recurringDue(userId, monthStart);
   if (!due.length) return [];
   if (!L.claimAlert(userId, "recurring", monthStart.slice(0, 7))) return [];
-  const lines = due.map((r) =>
-    `• ${r.counterparty} ~${fromCents(Math.round(r.avg_cents))} ฿ (จ่ายมาแล้ว ${r.times} ครั้ง)`);
-  return [{
-    type: "text",
-    text: `🔔 รายการที่จ่ายประจำ แต่เดือนนี้ยังไม่เห็น:\n${lines.join("\n")}`,
-  }];
+  return [card({
+    title: "รายการประจำที่เดือนนี้ยังไม่เห็น", emoji: "🔔", tone: "info",
+    rows: due.map((r) => ({
+      label: r.counterparty,
+      value: `~${fromCents(Math.round(r.avg_cents))} ฿ · เคยจ่าย ${r.times} ครั้ง`,
+    })),
+    text: "ถ้าจ่ายไปแล้ว ส่งสลิปเข้ามาได้เลยครับ",
+    actions: [{ label: "🧾 ดูรายการล่าสุด", data: "act=list", primary: true }],
+    altText: `รายการประจำที่ยังไม่เห็นเดือนนี้: ` +
+             due.map((r) => `${r.counterparty} ~${fromCents(Math.round(r.avg_cents))} ฿`).join(", "),
+  })];
 }
 
 /**
