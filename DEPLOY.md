@@ -1,52 +1,196 @@
-# Deploy ขึ้น VPS
+# DEPLOY.md — คู่มือ deploy (เขียนสำหรับ AI agent)
 
-ทั้งระบบเป็น **CPU ล้วน ไม่ต้องมี GPU** — วัดจาก container จริง: RAM รวม **~340 MB** · image รวม **~2.6 GB**
+เขียนให้ **agent อ่านแล้วทำตามได้เอง** ทุกขั้นมีคำสั่งตรวจผล + ผลลัพธ์ที่ควรได้
+**ถ้าผลไม่ตรงที่เขียนไว้ ให้หยุดแล้วรายงาน อย่าเดาต่อ**
+
+---
+
+## 0. บริบท — สิ่งที่กำลัง deploy
+
+LINE bot อ่านสลิปธนาคารไทย + สมุดบัญชีรายรับ-รายจ่าย · **CPU ล้วน ไม่ต้องมี GPU ไม่มี LLM**
 
 ```
-LINE ──HTTPS──► Caddy (443) ──► bot :3000 ──(network ภายใน)──► ocr :8101
-                                    │
-                                    └── SQLite (docker volume)
+LINE ──HTTPS──► reverse proxy (443) ──► bot :3000 ──compose network──► ocr :8101
+                                            │
+                                            └── SQLite ใน docker volume
 ```
 
-## 1. เตรียม VPS
+| service | stack | RAM ที่วัดได้ | image |
+|---|---|---|---|
+| `bot` | Node 22 + Express 5 | 23 MB | 296 MB |
+| `ocr` | Python 3.12 + PaddleOCR (CPU) | 235 MB | 2.27 GB |
 
+**ตัวเลขอ้างอิงสำหรับตรวจว่า deploy ถูก** (วัดจริงมาแล้ว):
+- OCR สลิป 1 ใบ: **~8.5 วิ บน 2 cores** · ~4.2 วิ บน 4 · ~2.2 วิ บน 8
+- `bot` ตอบ webhook: **~3 ms**
+- ถ้าช้ากว่านี้มาก → ดูข้อ 10.2
+
+---
+
+## 1. ⛔ สิ่งที่ agent ทำเองไม่ได้ — ต้องขอจากมนุษย์
+
+**อย่าหาเอง อย่าเดา อย่าสร้างค่าขึ้นมาเอง** ถ้าไม่มีให้หยุดแล้วถาม
+
+| ต้องการ | เอามาจากไหน |
+|---|---|
+| `LINE_CHANNEL_SECRET` | LINE Developers Console → Basic settings |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Developers Console → Messaging API → Issue |
+| SSH เข้า VPS | เจ้าของระบบ |
+| โดเมน + DNS A record ชี้มาที่ VPS | เจ้าของระบบ (หรือใช้ Tailscale Funnel — ข้อ 7B) |
+| ตั้ง Webhook URL ใน LINE Console | ต้องกดในเบราว์เซอร์ |
+| ปิด Auto-reply / Greeting ใน LINE OA Manager | ต้องกดในเบราว์เซอร์ |
+
+> ⚠️ `LINE_CHANNEL_ACCESS_TOKEN` คุมบัญชี LINE OA ได้ทั้งหมด
+> **ห้ามพิมพ์ค่าลง log / stdout / commit / ข้อความรายงาน** — เขียนลง `.env` อย่างเดียว
+
+---
+
+## 2. Preflight — ตรวจเครื่องก่อน
+
+```bash
+docker --version && docker compose version
+nproc                                              # จำนวน core → ใช้ตั้ง OCR_THREADS
+free -m | awk '/^Mem/{print $7" MB available"}'    # ต้อง > 1500
+df -h / | awk 'NR==2{print $4" free"}'             # ต้อง > 5G
+```
+
+**เกณฑ์ผ่าน:** RAM ว่าง ≥ 1.5 GB · ดิสก์ว่าง ≥ 5 GB
+
+ยังไม่มี docker:
 ```bash
 sudo apt update && sudo apt install -y docker.io docker-compose-plugin git
-sudo usermod -aG docker $USER   # ออกจาก ssh แล้วเข้าใหม่
+sudo usermod -aG docker "$USER"     # ต้อง logout/login ใหม่ถึงมีผล
 ```
 
-## 2. Clone + ตั้งค่า
+---
+
+## 3. Clone
+
+repo เป็น **private** ต้องมีสิทธิ์เข้าถึงก่อน
 
 ```bash
-git clone <repo> slipingman && cd slipingman
+git clone git@github.com:prommin01st-lang/thai-slip-ocr-line-bot.git slipingman
+cd slipingman && git log --oneline -1
+```
+
+---
+
+## 4. ตั้งค่า `.env`
+
+```bash
 cp .env.example .env
-nano .env        # เติม LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN
 ```
 
-**สร้าง token ให้ backend ด้วย** (กัน OCR service ถูกเรียกมั่ว):
+แก้ 2 บรรทัดนี้ด้วยค่าจากข้อ 1:
+```
+LINE_CHANNEL_SECRET=<ค่าจริง>
+LINE_CHANNEL_ACCESS_TOKEN=<ค่าจริง>
+```
+
+เพิ่มอีก 2 บรรทัด:
+```bash
+echo "OCR_TOKEN=$(openssl rand -hex 32)" >> .env    # กัน ocr ถูกเรียกมั่ว
+echo "OCR_THREADS=$(nproc)" >> .env                 # ให้ตรงกับ core จริง
+```
+
+**ตรวจว่าครบ** (ไม่พิมพ์ค่าออกมา แค่ดูว่าไม่ว่าง — ทุกอันต้องได้ `1`):
+```bash
+for k in LINE_CHANNEL_SECRET LINE_CHANNEL_ACCESS_TOKEN OCR_TOKEN; do
+  printf '%s = %s\n' "$k" "$(grep -c "^$k=.\+" .env)"
+done
+```
+
+ได้ `0` แปลว่ายังว่าง → กลับไปข้อ 1
+
+> `PUBLIC_URL` **ยังไม่ต้องตั้ง** จนกว่าจะมีโดเมนจริง (ข้อ 7)
+> ไม่ตั้ง = ปุ่มส่งออก CSV ถูกซ่อนไว้ ซึ่งถูกต้องแล้ว
+
+---
+
+## 5. Build + start
 
 ```bash
-echo "OCR_TOKEN=$(openssl rand -hex 32)" >> .env
+docker compose up -d --build
 ```
 
-> 🔒 `.env` อยู่ใน `.gitignore` และ `.dockerignore` — ไม่มีทางหลุดเข้า git หรือ image
+**ครั้งแรก 5–15 นาที** (โหลด paddlepaddle ~100 MB + โมเดล 215 MB เข้า image)
 
-## 3. รัน
-
+รอจน healthy:
 ```bash
-docker compose up -d --build     # ครั้งแรกนาน ~5-10 นาที (โหลด paddle + โมเดล)
-docker compose ps
-curl -s localhost:3000/health | jq
+for i in $(seq 1 90); do
+  docker compose ps --format '{{.Service}}={{.Health}}' | grep -q 'bot=healthy' && break
+  sleep 5
+done
+docker compose ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-ควรได้ `{"status":"ok","ocr":{"ok":true,"engine":"paddleocr"}}`
+**ผลที่ควรได้:**
+```
+SERVICE   STATUS                   PORTS
+bot       Up X seconds (healthy)   127.0.0.1:3000->3000/tcp
+ocr       Up X seconds (healthy)   8101/tcp
+```
 
-## 4. เปิด HTTPS ให้ LINE ยิงเข้ามา
+จุดที่ต้องเช็คให้ดี:
+- `ocr` = `8101/tcp` **เฉย ๆ ห้ามมี `0.0.0.0:` นำหน้า**
+- `bot` = `127.0.0.1:3000` **ไม่ใช่ `0.0.0.0:3000`**
 
-LINE ต้องการ **HTTPS + cert จาก CA ที่เชื่อถือได้** (self-signed ใช้ไม่ได้)
+---
 
-### ทางเลือก A — Caddy + โดเมนของคุณ (แนะนำ)
+## 6. ตรวจว่าใช้งานได้จริง — ทำทุกข้อ
 
+### 6.1 health
+```bash
+curl -s localhost:3000/health
+```
+ควรได้ `{"status":"ok","queue":0,"ocr":{"ok":true,"engine":"paddleocr","vram_gb":0,...}}`
+
+`"ok":false` → ข้อ 10.3
+
+### 6.2 `ocr` ต้องเข้าจากนอกไม่ได้
+```bash
+curl -s --max-time 3 localhost:8101/health >/dev/null && echo "FAIL: เปิดออกนอก" || echo "OK: ปิดอยู่"
+```
+ต้องได้ `OK: ปิดอยู่`
+
+### 6.3 ลายเซ็น webhook
+```bash
+set -a; . ./.env; set +a
+BODY='{"destination":"U1","events":[]}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$LINE_CHANNEL_SECRET" -binary | base64)
+echo "ถูก:  $(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:3000/webhook -H 'Content-Type: application/json' -H "X-Line-Signature: $SIG" -d "$BODY")"
+echo "ผิด: $(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:3000/webhook -H 'Content-Type: application/json' -H 'X-Line-Signature: WRONG' -d "$BODY")"
+```
+ต้องได้ **`ถูก: 200`** และ **`ผิด: 401`** — ได้อย่างอื่นห้ามไปต่อ
+
+### 6.4 OCR อ่านสลิปได้จริง
+ต้องมีรูปสลิปสักใบ (ขอจากเจ้าของระบบ)
+```bash
+docker compose cp /path/to/slip.jpg ocr:/tmp/t.jpg
+docker compose exec -T ocr python -c "
+import time, ocr_paddle
+ocr_paddle.load_model()
+t=time.perf_counter(); txt=ocr_paddle.ocr_image('/tmp/t.jpg')
+print(f'{time.perf_counter()-t:.1f} วิ, {len(txt.splitlines())} บรรทัด')
+print(txt[:300])"
+```
+**ต้องได้ข้อความภาษาไทยที่อ่านออก** — ถ้าเป็นอักษรอื่น (อาหรับ/จีน/ละติน) → ข้อ 10.4
+
+### 6.5 ข้อมูลรอดตอน restart
+```bash
+docker compose restart bot && sleep 8
+curl -s localhost:3000/health | grep -q '"status":"ok"' && echo OK || echo FAIL
+```
+
+---
+
+## 7. เปิดสู่อินเทอร์เน็ต
+
+LINE ต้องการ **HTTPS + cert จาก CA ที่เชื่อถือได้** — self-signed ใช้ไม่ได้
+
+### 7A. Caddy + โดเมนจริง (แนะนำ)
+
+ต้องมี DNS A record ชี้มาที่ IP ของ VPS แล้ว
 ```bash
 sudo apt install -y caddy
 sudo tee /etc/caddy/Caddyfile <<'EOF'
@@ -54,129 +198,170 @@ bot.example.com {
     reverse_proxy 127.0.0.1:3000
 }
 EOF
-sudo systemctl reload caddy
+sudo systemctl reload caddy && sleep 10
+curl -s https://bot.example.com/health     # ต้องได้ JSON เดียวกับ 6.1
 ```
 
-Caddy ขอ cert จาก Let's Encrypt ให้อัตโนมัติ
-
-### ทางเลือก B — Tailscale Funnel (ไม่ต้องมีโดเมน)
-
+### 7B. Tailscale Funnel (ไม่มีโดเมน)
 ```bash
-sudo tailscale up --authkey tskey-auth-xxxxx --hostname slipingman-vps
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --authkey <tskey-auth-...> --hostname slipingman-vps
 tailscale funnel --bg 3000
+tailscale funnel status                    # จด URL ที่ได้
 ```
+ต้องเปิดสิทธิ์ `funnel` ใน tailnet ACL ก่อน ไม่งั้นคำสั่งจะ error
 
-ได้ URL `https://slipingman-vps.<tailnet>.ts.net`
-
-## 5. ตั้ง Webhook ใน LINE
-
-[Developers Console](https://developers.line.biz/console/) → Messaging API → Webhook URL
-
-```
-https://<โดเมนของคุณ>/webhook
-```
-
-กด **Verify** แล้วเปิด **Use webhook**
-
-> ปิด **Auto-reply** และ **Greeting messages** ใน [OA Manager](https://manager.line.biz/) ด้วย
-> ไม่งั้นบอทจะตอบซ้อนกับข้อความอัตโนมัติของ LINE
-
-## 6. Rich menu (ครั้งเดียว)
-
-รันจากเครื่องที่มี Node + `.env` (ไม่ต้องทำใน container):
-
-```bash
-npm install
-node scripts/richmenu.mjs create
-```
-
-## 7. ส่งออก CSV — ต้องตั้ง `PUBLIC_URL`
-
-LINE **ส่งไฟล์ให้ผู้ใช้ไม่ได้** (Messaging API ไม่มี message type สำหรับไฟล์)
-ปุ่ม "ส่งออก CSV" จึงให้ลิงก์ที่บอทเสิร์ฟเอง → ต้องรู้ URL สาธารณะของตัวเอง
-
+### หลังได้ URL แล้ว
 ```bash
 echo "PUBLIC_URL=https://bot.example.com" >> .env
-docker compose restart bot
+docker compose restart bot                 # ปุ่มส่งออก CSV จะกลับมา
 ```
 
-ลิงก์คุมไว้ 3 ชั้น: token สุ่ม 32 ไบต์ · หมดอายุ 15 นาที (`EXPORT_TTL_MIN`) · **ใช้ได้ครั้งเดียว**
-และหายทันทีเมื่อผู้ใช้กด "ลบข้อมูลของฉัน"
+### firewall
+```bash
+sudo ufw allow 22,80,443/tcp && sudo ufw --force enable
+sudo ufw status                            # ต้องไม่มี 3000 / 8101
+```
 
-> ⚠️ ถ้าใช้ **ngrok free** ลิงก์จะติดหน้าเตือนของ ngrok ก่อน (ผู้ใช้ต้องกด "Visit Site")
-> ใช้โดเมนจริงกับ Caddy จะไม่มีปัญหานี้
+---
 
-## 8. สรุปรายสัปดาห์ (ตัวเลือก)
+## 8. ⛔ ขั้นที่ต้องให้มนุษย์กดในเบราว์เซอร์
+
+1. **LINE Developers Console** → Messaging API → Webhook URL = `https://<โดเมน>/webhook`
+   → กด **Verify** → เปิด **Use webhook**
+2. **LINE OA Manager** → ปิด **Auto-reply messages** และ **Greeting messages**
+   (ไม่ปิด = บอทตอบซ้อนกับข้อความอัตโนมัติของ LINE)
+
+**agent ตรวจผลได้เองด้วย API — ไม่ต้องเปิดเบราว์เซอร์:**
+```bash
+set -a; . ./.env; set +a
+curl -s https://api.line.me/v2/bot/channel/webhook/endpoint \
+  -H "Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN"
+# ควรได้ {"endpoint":"https://.../webhook","active":true}
+
+curl -s -X POST https://api.line.me/v2/bot/channel/webhook/test \
+  -H "Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" -d '{}'
+# ควรได้ {"success":true,"statusCode":200,...}
+```
+
+| ผล | แปลว่า |
+|---|---|
+| `"success":false, statusCode:404` | path ไม่ตรง (บอทรับทั้ง `/webhook` และ `/line/webhook`) |
+| `statusCode:0` หรือ timeout | reverse proxy / DNS / firewall มีปัญหา |
+| `statusCode:502` | `bot` ไม่ตอบ — ดู `docker compose logs bot` |
+
+---
+
+## 9. Rich menu (ครั้งเดียว ตัวเลือก)
+
+รันจากเครื่องที่มี Node + `.env`:
+```bash
+npm install
+python3 scripts/richmenu_image.py      # ต้องมี pillow
+node scripts/richmenu.mjs create
+node scripts/richmenu.mjs list         # ยืนยันว่ามี default menu
+```
+
+---
+
+## 10. อาการพังที่เคยเจอจริง
+
+### 10.1 build ไม่ผ่าน — `libgomp.so.1: cannot open shared object file`
+`paddlepaddle` ต้องใช้ OpenMP runtime ซึ่ง `python:3.12-slim` ไม่มีให้
+`ocr/Dockerfile` ใส่ไว้แล้ว — ถ้ายังเจอ ให้เช็คว่าบรรทัด `apt-get install` มี
+`libgomp1 libgl1 libglib2.0-0` ครบ
+
+### 10.2 OCR ช้ากว่าตารางในข้อ 0 มาก
+เวลาแปรผกผันกับจำนวน core เกือบเป๊ะ (1.5 core = 10.1 วิ · 2 = 8.5 · 4 = 4.2 · 8 = 2.2)
+```bash
+docker inspect $(docker compose ps -q ocr) --format '{{.HostConfig.NanoCpus}}'   # ต้องได้ 0
+grep OCR_THREADS .env                                                            # ต้องเท่ากับ nproc
+```
+**อย่าใส่ `cpus:` limit ใน `docker-compose.yml`** — ตั้งต่ำกว่าที่เครื่องมีคือทำให้ช้าเปล่า ๆ
+
+### 10.3 `health` บอก `"ocr":{"ok":false}`
+```bash
+docker compose logs --tail 40 ocr
+docker compose exec -T bot sh -c 'wget -qO- http://ocr:8101/health || echo FAIL'
+```
+- `ocr` ยัง unhealthy → รอโหลดโมเดลเสร็จ (~30 วิแรก)
+- `bot` เรียกแล้วได้ 401 → `OCR_TOKEN` ไม่ตรงกัน (ทั้งสอง service อ่านค่าเดียวกันจาก `.env`)
+
+### 10.4 OCR อ่านได้แต่เป็นภาษาอื่น (อาหรับ/จีน/ละติน)
+recognition model ผิดภาษา — `ocr/ocr_paddle.py` ต้องมี
+`text_recognition_model_name="th_PP-OCRv5_mobile_rec"`
+
+> ⚠️ **อาการนี้ตัวเลขยังถูก มีแต่ตัวหนังสือที่เพี้ยน** ถ้าตรวจแค่ยอดเงินจะไม่รู้ว่าพัง
+> ต้องดูข้อความไทยด้วยทุกครั้ง
+
+### 10.5 บอทเงียบ ไม่ตอบอะไรเลย
+```bash
+docker compose logs --tail 30 bot | grep '\[event\]'
+```
+- ไม่มี `[event]` เลย → LINE ยิงไม่ถึง (ข้อ 8)
+- มี `[event]` แต่ไม่ตอบ → หา `[reply ล้มเหลว]` มักเป็น access token ผิด/หมดอายุ
+
+### 10.6 พอร์ตชนตอน `up`
+```bash
+ss -ltnp | grep -E ':3000|:8101'
+```
+มีตัวอื่นยึดอยู่ → หยุดก่อน หรือแก้ `ports:` ใน compose
+
+---
+
+## 11. คำสั่งดูแลประจำ
 
 ```bash
-crontab -e
-# ทุกเช้าวันจันทร์ 08:00 ไทย (= 01:00 UTC)
+docker compose logs -f bot          # log สด
+docker compose up -d --build        # deploy โค้ดใหม่
+docker compose restart bot          # หลังแก้ .env
+
+# สำรอง DB — มีข้อมูลการเงินจริง ควรทำสม่ำเสมอ
+docker compose exec -T bot cat /app/data/slipingman.db > backup-$(date +%F).db
+```
+
+สรุปรายสัปดาห์ (ตัวเลือก) — cron เช้าวันจันทร์ 08:00 ไทย = 01:00 UTC:
+```
 0 1 * * 1 cd /path/to/slipingman && docker compose exec -T bot node scripts/weekly.mjs >> /var/log/slipingman-weekly.log 2>&1
 ```
 
 ---
 
-## ทรัพยากรที่ใช้จริง (วัดแล้ว)
-
-วัดจาก container จริง (ไม่ใช่ประมาณการ):
-
-| | RAM ตอนรัน | image |
-|---|---|---|
-| `ocr` (PaddleOCR) | **314 MB** | 2.27 GB |
-| `bot` (Node) | **23 MB** | 296 MB |
-| **รวม** | **~340 MB** | **~2.6 GB** |
-
-บน VPS 3.8 GB RAM → เหลือเฟือ (`docker-compose.yml` จำกัด `ocr` ที่ 1.6 GB กันพลาด)
-
-### ความเร็ว OCR ขึ้นกับจำนวน core ตรง ๆ
-
-| cores | เวลา/รูป |
-|---|---|
-| 1.5 | 10.1 วิ |
-| **2 (VPS ของคุณ)** | **~8.5 วิ** |
-| 4 | 4.2 วิ |
-| 8 | 2.2 วิ |
-
-**ไม่ได้ตั้ง cpu limit ไว้** — ตั้งต่ำกว่าที่เครื่องมีคือทำให้ช้าลงเปล่า ๆ
-ส่วน `bot` ใช้ CPU แค่ ~3ms ต่อ webhook ซึ่ง scheduler แบ่งให้ได้อยู่แล้ว
-
-ถ้า VPS มีมากกว่า 2 cores ให้ตั้ง `OCR_THREADS` ใน `.env` ให้เท่าจำนวน core จริง
-
-## คำสั่งที่ใช้บ่อย
+## 12. Rollback
 
 ```bash
-docker compose logs -f bot          # ดู log
-docker compose logs -f ocr
-docker compose restart bot          # รีสตาร์ทหลังแก้ .env
-docker compose up -d --build        # deploy โค้ดใหม่
-docker compose exec bot node -e "..."   # เข้าไปรันคำสั่ง
-
-# สำรอง DB (มีข้อมูลการเงินจริง — ควรทำสม่ำเสมอ)
-docker compose exec -T bot cat /app/data/slipingman.db > backup-$(date +%F).db
+docker compose down                  # หยุด — volume ยังอยู่ ข้อมูลไม่หาย
+git log --oneline -5
+git checkout <commit ก่อนหน้า> && docker compose up -d --build
 ```
 
-## อัปเดตโค้ด OCR
+> ⛔ **`docker compose down -v` ลบ volume = ลบข้อมูลผู้ใช้ทั้งหมด**
+> ห้ามใช้เว้นแต่ตั้งใจจริง และสำรอง DB ก่อนเสมอ
 
-ไฟล์ใน `ocr/` เป็นสำเนาจาก `slip-ocr-th` (ต้นทาง) — แก้ที่ต้นทางแล้วรัน:
+---
 
-```bash
-./scripts/sync-ocr.sh          # คัดลอกมาใหม่
-./scripts/sync-ocr.sh --check  # เช็คว่าตรงกันไหม
-```
+## 13. ✅ Checklist ก่อนบอกว่า deploy เสร็จ
 
-## ความปลอดภัย
+- [ ] `docker compose ps` — `bot` และ `ocr` เป็น `healthy` ทั้งคู่
+- [ ] `ocr` **ไม่มี** port ผูกกับ `0.0.0.0`
+- [ ] `curl localhost:3000/health` → `"ok":true` และ `"engine":"paddleocr"`
+- [ ] webhook: ลายเซ็นถูก = 200 · ผิด = 401
+- [ ] OCR สลิปทดสอบได้**ข้อความไทยอ่านออก** ในเวลาที่สมเหตุสมผลกับจำนวน core
+- [ ] `https://<โดเมน>/health` เข้าได้จากนอกเครื่อง
+- [ ] LINE `webhook/test` → `"success":true`
+- [ ] `ufw status` — ไม่มี 3000 / 8101 เปิดออกนอก
+- [ ] `git status --short` — **ไม่มี `.env`**
+- [ ] ส่งสลิปจริงผ่าน LINE แล้วได้การ์ดตอบกลับ ← **ข้อนี้ต้องให้มนุษย์ลอง**
 
-- `ocr` **ไม่ publish พอร์ตออกนอกเครื่อง** — เข้าถึงได้เฉพาะจาก `bot` ผ่าน network ภายใน
-- `bot` ผูกกับ `127.0.0.1:3000` — ต้องผ่าน reverse proxy เท่านั้น
-- ทั้งสอง container รันด้วย user ธรรมดา ไม่ใช่ root
-- ตั้ง `OCR_TOKEN` แล้ว `ocr` จะปฏิเสธ request ที่ไม่มี `X-Auth-Token`
-- ตั้ง firewall: `sudo ufw allow 22,80,443/tcp && sudo ufw enable`
+---
 
-## ⚠️ PDPA
+## 14. ⚠️ PDPA — ต้องแจ้งเจ้าของระบบ
 
-ระบบเก็บข้อมูลการเงินของบุคคลจริง (ยอด คู่ค้า เลขบัญชี 4 ตัวท้าย)
+ระบบเก็บ**ข้อมูลการเงินของบุคคลจริง** และสลิปหนึ่งใบมีข้อมูลของ**คนที่ไม่ได้มาใช้บอทด้วย** (ผู้รับโอน)
 
-- ผู้ใช้ต้องกด **ยินยอม** ก่อนระบบถึงเริ่มบันทึก
-- คำสั่ง `ลบข้อมูลของฉัน` ลบจริงทุกตาราง (มีเทสยืนยัน)
-- **ไม่เก็บรูปสลิป** — เก็บแค่ `sha256` ไว้กันบันทึกซ้ำ
-- ควรเข้ารหัสดิสก์ VPS และเก็บ backup ในที่ปลอดภัย
+**ระบบทำให้แล้ว:** ขอความยินยอมก่อนเก็บ · ไม่เก็บรูปสลิป (เก็บแค่ sha256) ·
+เลขบัญชีเก็บแค่ 4 ตัวท้าย · `ลบข้อมูลของฉัน` ลบจริงทุกตาราง
+
+**เจ้าของระบบต้องทำเอง:** เข้ารหัสดิสก์ VPS · เก็บ backup ในที่ปลอดภัย ·
+ไม่ log ข้อความ OCR ดิบลงไฟล์ถาวร
