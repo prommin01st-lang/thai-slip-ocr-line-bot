@@ -92,14 +92,22 @@ const exportCard = (userId) => {
 const settingsCard = (userId) => {
   const weeklyOn = L.getPref(userId, "weekly") === "on";
   const bs = L.getBudgets(userId);
+  const accts = L.getAccounts(userId);
   return card({
     title: "ตั้งค่า", emoji: "⚙️", tone: "neutral",
     rows: [
       { label: "สรุปรายสัปดาห์", value: weeklyOn ? "เปิด" : "ปิด" },
       { label: "งบที่ตั้งไว้", value: bs.length ? `${bs.length} รายการ` : "ยังไม่ได้ตั้ง" },
+      // ต้องโชว์ — นี่คือสิ่งที่ระบบใช้ตัดสินว่าสลิปใบไหนรับ/จ่าย โดยไม่ถามอีก
+      // ถ้าเรียนผิดไว้ ผู้ใช้ต้องเห็นได้ว่าผิดตรงไหน ไม่ใช่เดาว่าทำไมบอทตอบแปลก ๆ
+      { label: "บัญชีที่จำไว้",
+        value: accts.length
+          ? accts.map((a) => a.name_hint || `••••${a.acct_tail}`).join(", ")
+          : "ยังไม่ได้จำ (จะถามตอนส่งสลิปใบแรก)" },
     ],
     actions: [
       { label: weeklyOn ? "🔕 ปิดสรุปรายสัปดาห์" : "🔔 เปิดสรุปรายสัปดาห์", data: "act=weekly" },
+      ...(accts.length ? [{ label: "🔄 ลืมบัญชีที่จำไว้", data: "act=forgetacct" }] : []),
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       { label: "📌 ตั้งงบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
       { label: "📌 ตั้งงบรายหมวด", fill: "งบ อาหาร ", data: "act=prompt&kind=budget" },
@@ -219,7 +227,10 @@ function savedCard(rec, amount, occurredAt, category = null) {
         ...(rec.direction === "unknown"
           ? [{ label: "💰 เป็นรายรับ", data: `act=dir&id=${rec.txnId}&v=in`, primary: true },
              { label: "💸 เป็นรายจ่าย", data: `act=dir&id=${rec.txnId}&v=out` }]
-          : []),
+          // เดาเองต้องมีปุ่มกลับเสมอ — ระบบถามแค่สลิปใบแรกแล้วจำบัญชีไว้เดาเอง
+          // ถ้าเดาผิดแล้วไม่มีปุ่มนี้ ผู้ใช้จะแก้ไม่ได้เลย ต้องลบทิ้งแล้วส่งใหม่อย่างเดียว
+          : [{ label: rec.direction === "in" ? "🔁 ที่จริงเป็นรายจ่าย" : "🔁 ที่จริงเป็นรายรับ",
+               data: `act=dir&id=${rec.txnId}&v=${rec.direction === "in" ? "out" : "in"}` }]),
         // ทิศทางยังไม่รู้ = ยังไม่ควรถามเรื่องหมวด ถามทีละเรื่องพอ
         ...(rec.direction === "out" ? categoryButtons(rec.txnId, category) : []),
         { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
@@ -421,6 +432,15 @@ async function handlePostback(event) {
   }
   if (act === "export") return respond(event, exportCard(userId));
   if (act === "settings") return respond(event, settingsCard(userId));
+  if (act === "forgetacct") {
+    const n = L.forgetAccounts(userId);
+    return respond(event, card({
+      title: "ลืมบัญชีที่จำไว้แล้ว", emoji: "🔄", tone: "success",
+      rows: [{ label: "ลบไป", value: `${n} บัญชี` }],
+      text: "สลิปใบถัดไปผมจะถามใหม่ว่าคุณเป็นผู้โอนหรือผู้รับ\nรายการที่บันทึกไปแล้วไม่เปลี่ยน",
+      actions: [{ label: "⚙️ กลับไปตั้งค่า", data: "act=settings", primary: true }],
+    }));
+  }
   if (act === "weekly") {
     const on = L.getPref(userId, "weekly") === "on";
     L.setPref(userId, "weekly", on ? "off" : "on");
@@ -482,8 +502,13 @@ async function handlePostback(event) {
         { label: "ลงวันที่", value: t?.occurred_at ?? "ตามวันที่บันทึก (อ่านวันที่บนสลิปไม่ออก)" },
         t?.category ? { label: "หมวด", value: labelOf(t.category) } : null,
       ],
-      text: r.learned ? "จำบัญชีคุณไว้แล้ว ครั้งต่อไปไม่ต้องถามอีก" : undefined,
+      text: r.learned
+        ? "จำบัญชีคุณไว้แล้ว ครั้งต่อไปไม่ต้องถามอีก\n(ถ้าเดาผิด กด “ตั้งค่า” แล้วลืมบัญชีที่จำไว้ได้)"
+        : undefined,
       actions: [
+        // ต้องกลับได้เสมอ — กดผิดปุ่มเดียวแล้วยอดไปอยู่ผิดฝั่งทั้งสรุปทั้งงบ
+        { label: v === "in" ? "🔁 ที่จริงเป็นรายจ่าย" : "🔁 ที่จริงเป็นรายรับ",
+          data: `act=dir&id=${id}&v=${v === "in" ? "out" : "in"}` },
         ...(v === "out" ? categoryButtons(id, t?.category) : []),
         { label: "📊 ดูสรุป", data: "act=summary" },
       ],

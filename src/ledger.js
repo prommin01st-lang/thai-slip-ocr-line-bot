@@ -117,6 +117,35 @@ export function guessDirection(userId, parsed) {
   return "unknown";      // ไม่ตรงเลย หรือตรงทั้งคู่ (โอนหาตัวเอง)
 }
 
+/** บัญชีที่จำไว้ — ให้ผู้ใช้เห็นว่าระบบใช้อะไรตัดสินว่าใบไหนรับ/จ่าย */
+export function getAccounts(userId) {
+  return db().prepare(
+    "SELECT bank, name_hint, acct_tail FROM user_accounts WHERE line_user_id = ? ORDER BY id")
+    .all(userId);
+}
+
+/**
+ * ลืมบัญชีที่จำไว้ทั้งหมด → สลิปใบถัดไปจะกลับมาถาม "รับหรือจ่าย" ใหม่
+ *
+ * จำเป็นเพราะถ้าเรียนผิดตั้งแต่ใบแรก (เช่นตอบผิด หรือ OCR อ่านชื่อมาไม่ครบ)
+ * สลิปทุกใบหลังจากนั้นจะถูกเดาผิดหมดโดยไม่ถามอีกเลย และไม่มีทางแก้นอกจาก
+ * ลบข้อมูลทิ้งทั้งบัญชี ซึ่งแรงเกินไปสำหรับความผิดพลาดแค่จุดเดียว
+ */
+export function forgetAccounts(userId) {
+  return db().prepare("DELETE FROM user_accounts WHERE line_user_id = ?").run(userId).changes;
+}
+
+/** ลืมบัญชีเดียวที่เรียนมาจากชื่อคู่ค้าตัวนี้ — ใช้ตอนผู้ใช้แก้คำตอบว่าเดาผิด */
+export function forgetAccount(userId, party) {
+  if (!party) return 0;
+  const name = String(party).replace(/[0-9xX*\-\s]{6,}/g, "").trim() || null;
+  const tail = acctTail(party);
+  if (!name && !tail) return 0;
+  return db().prepare(`DELETE FROM user_accounts WHERE line_user_id = ?
+                       AND (( ? IS NOT NULL AND name_hint = ?) OR (? IS NOT NULL AND acct_tail = ?))`)
+    .run(userId, name, name, tail, tail).changes;
+}
+
 /** จำบัญชีของผู้ใช้จากคำตอบ ("ใบนี้คุณเป็นผู้โอน") → ครั้งหน้าเดาเองได้ */
 export function learnAccount(userId, party, bank = null) {
   if (!party) return false;
@@ -440,18 +469,29 @@ export function confirmDirection(userId, txnId, direction) {
   const t = getTxn(userId, txnId);
   if (!t) return false;
   const slip = db().prepare("SELECT fields_json, bank FROM slips WHERE txn_id = ?").get(txnId);
+  // เรียนบัญชีเฉพาะตอนที่ระบบ "ถามเพราะไม่รู้" เท่านั้น
+  //
+  // ถ้าเป็นการ **แก้คำตอบเดิม** ห้ามเรียนฝั่งใหม่เด็ดขาด — ฝั่งใหม่คือคู่ค้า
+  // ไม่ใช่บัญชีผู้ใช้ การเรียนมันเข้าไปจะทำให้ทั้งสองฝั่งของสลิปใบหน้าแมตช์
+  // แล้วเดาแย่ลงเรื่อย ๆ (ยิ่งแก้ยิ่งพัง) — เทสจับได้ตอนเขียนเทสปุ่มสลับทิศทาง
+  const wasAsked = t.direction === "unknown";
   let learned = false;
   if (slip?.fields_json) {
     try {
       const f = JSON.parse(slip.fields_json);
       // ผู้ใช้เป็นผู้โอน → ฝั่ง `from` คือบัญชีของผู้ใช้ (และกลับกัน)
-      learned = learnAccount(userId, direction === "out" ? f.from : f.to, slip.bank);
+      if (wasAsked) {
+        learned = learnAccount(userId, direction === "out" ? f.from : f.to, slip.bank);
+      } else {
+        // แก้คำตอบ = ที่เคยเรียนจากสลิปใบนี้ผิด → ถอนออก ไม่งั้นค้างผิดไปตลอด
+        forgetAccount(userId, t.direction === "out" ? f.from : f.to);
+      }
       const other = direction === "out" ? f.to : f.from;
       if (other) db().prepare("UPDATE txns SET counterparty = ? WHERE id = ?").run(other, txnId);
     } catch { /* fields_json เสีย ก็แค่ไม่ได้เรียนรู้ */ }
   }
   updateTxn(userId, txnId, { direction });
-  return { ok: true, learned };
+  return { ok: true, learned, corrected: !wasAsked };
 }
 
 // ---------- งบประมาณ + แจ้งเตือน ----------

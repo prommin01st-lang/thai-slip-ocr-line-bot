@@ -393,4 +393,54 @@ assert.equal(L.findDuplicate(D, { imageSha256: "dup-hash" })?.txnId, d2.txnId,
   "รายการใหม่ต้องกันซ้ำต่อได้ตามปกติ");
 ok("บันทึกใหม่แล้วกันซ้ำกลับมาทำงานเหมือนเดิม");
 
+// --- ทิศทางที่ระบบเดาเองต้องแก้กลับได้ ---
+//
+// ระบบถาม "รับหรือจ่าย" แค่สลิปใบแรก แล้วจำบัญชีไว้เดาเองตลอด (ตั้งใจให้เป็นแบบนั้น)
+// แต่ถ้าเรียนผิดตั้งแต่ใบแรก ใบต่อ ๆ ไปจะผิดหมดโดยไม่ถามอีกเลย
+// เดิมการ์ดบันทึกมีปุ่ม รับ/จ่าย เฉพาะตอน direction='unknown' → เดาแล้วแก้ไม่ได้เลย
+const A = "Uacct000000000000000000000000001";
+L.ensureUser(A, "A"); L.grantConsent(A);
+const meSlip = slip({ from: "นาย ทดสอบ ระบบ", to: "ร้านค้า ก" });
+
+// ใบแรก: ไม่รู้จักบัญชีเลย → ต้องถาม
+const a1 = L.recordSlip(A, meSlip, { imageSha256: "a-1" });
+assert.equal(a1.direction, "unknown", "ใบแรกต้องถาม ไม่ใช่เดา");
+L.confirmDirection(A, a1.txnId, "out");
+assert.equal(L.getAccounts(A).length, 1, "ตอบแล้วต้องจำบัญชีไว้");
+
+// ใบที่สอง: เดาเองได้ ไม่ถามซ้ำ — นี่คือพฤติกรรมที่ตั้งใจ
+const a2 = L.recordSlip(A, slip({ from: "นาย ทดสอบ ระบบ", to: "ร้านค้า ข",
+  amount: "123.00", time: "09:00" }), { imageSha256: "a-2" });
+assert.equal(a2.direction, "out", "ใบที่สองต้องเดาเองได้ ไม่ต้องถามซ้ำ");
+ok("ถามแค่สลิปใบแรก ใบต่อไปเดาเองจากบัญชีที่จำไว้");
+
+// เดาผิดต้องกดกลับได้ — และ **ห้ามเรียนคู่ค้าเป็นบัญชีของผู้ใช้เพิ่ม**
+// ถ้าเรียน ทั้งสองฝั่งของสลิปใบหน้าจะแมตช์ แล้วเดาแย่ลงทุกครั้งที่แก้ (ยิ่งแก้ยิ่งพัง)
+const fix = L.confirmDirection(A, a2.txnId, "in");
+assert.equal(fix.ok, true);
+assert.equal(fix.corrected, true, "ต้องรู้ว่านี่คือการแก้ ไม่ใช่การตอบครั้งแรก");
+assert.equal(fix.learned, false, "แก้คำตอบต้องไม่เรียนบัญชีใหม่");
+assert.equal(L.getTxn(A, a2.txnId).direction, "in", "สลับทิศทางย้อนหลังได้");
+assert.equal(L.getAccounts(A).length, 0,
+  "ที่เคยเรียนจากสลิปใบนี้ผิด → ต้องถอนออก ไม่ใช่ปล่อยค้างไว้");
+ok("เดาผิดแล้วสลับกลับได้ + ถอนบัญชีที่เรียนผิดออก ไม่เรียนคู่ค้าเพิ่ม");
+
+// ล้างเองทั้งหมดก็ต้องได้ ไม่ใช่ต้องลบข้อมูลทิ้งทั้งบัญชี
+L.confirmDirection(A, a2.txnId, "out");        // ตอบใหม่ให้มีบัญชีจำไว้อีกรอบ
+assert.equal(L.getAccounts(A).length, 0, "แก้ซ้ำก็ยังต้องไม่เรียนเพิ่ม");
+L.recordSlip(A, slip({ from: "นาย ทดสอบ ระบบ", to: "ร้านค้า ง", amount: "77.00", time: "13:00" }),
+  { imageSha256: "a-4" });
+const a4 = L.recentTxns(A, 1)[0];
+L.confirmDirection(A, a4.id, "out");            // ใบนี้ระบบถามเพราะไม่รู้ → เรียนได้
+const dirBefore = L.recentTxns(A, 50).map((t) => [t.id, t.direction]);
+assert.equal(L.forgetAccounts(A), 1);
+assert.equal(L.getAccounts(A).length, 0);
+const a3 = L.recordSlip(A, slip({ from: "นาย ทดสอบ ระบบ", to: "ร้านค้า ค",
+  amount: "456.00", time: "11:00" }), { imageSha256: "a-3" });
+assert.equal(a3.direction, "unknown", "ลืมบัญชีแล้วต้องกลับมาถามใหม่");
+for (const [id, dir] of dirBefore) {
+  assert.equal(L.getTxn(A, id).direction, dir, `รายการ #${id} ที่บันทึกไปแล้วต้องไม่เปลี่ยน`);
+}
+ok("ลืมบัญชีที่จำไว้ได้ → กลับมาถามใหม่ โดยของเก่าไม่กระทบ");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);
