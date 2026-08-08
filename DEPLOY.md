@@ -36,7 +36,7 @@ LINE ──HTTPS──► reverse proxy (443) ──► bot :3000 ──compose 
 | `LINE_CHANNEL_SECRET` | LINE Developers Console → Basic settings |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Developers Console → Messaging API → Issue |
 | SSH เข้า VPS | เจ้าของระบบ |
-| โดเมน + DNS A record ชี้มาที่ VPS | เจ้าของระบบ (หรือใช้ Tailscale Funnel — ข้อ 7B) |
+| ทางออกสู่อินเทอร์เน็ต — เลือกอย่างใดอย่างหนึ่ง | **ngrok authtoken + โดเมนที่จองไว้** (ข้อ 7C ⭐) · โดเมน + DNS A record (7A) · Tailscale authkey (7B) |
 | ตั้ง Webhook URL ใน LINE Console | ต้องกดในเบราว์เซอร์ |
 | ปิด Auto-reply / Greeting ใน LINE OA Manager | ต้องกดในเบราว์เซอร์ |
 
@@ -226,7 +226,17 @@ curl -s localhost:3000/health | grep -q '"status":"ok"' && echo OK || echo FAIL
 
 LINE ต้องการ **HTTPS + cert จาก CA ที่เชื่อถือได้** — self-signed ใช้ไม่ได้
 
-### 7A. Caddy + โดเมนจริง (แนะนำ)
+**เลือกวิธีเดียว:**
+
+| วิธี | ต้องมีโดเมน | ต้องเปิดพอร์ต 80/443 | เหมาะกับ |
+|---|---|---|---|
+| **7C. ngrok** ⭐ | ไม่ต้อง — ได้ `*.ngrok-free.dev` มาให้ | **ไม่ต้อง** | ไม่มีโดเมน / มี ngrok อยู่แล้ว |
+| 7A. Caddy | ต้องมี + DNS A record | ต้อง | มีโดเมนของตัวเอง |
+| 7B. Tailscale Funnel | ไม่ต้อง | ไม่ต้อง | ใช้ tailnet อยู่แล้ว |
+
+> **ถ้าเจ้าของระบบไม่ได้ระบุว่ามีโดเมนจริง ให้ข้ามไปทำข้อ 7C**
+
+### 7A. Caddy + โดเมนจริง
 
 ต้องมี DNS A record ชี้มาที่ IP ของ VPS แล้ว
 ```bash
@@ -249,16 +259,103 @@ tailscale funnel status                    # จด URL ที่ได้
 ```
 ต้องเปิดสิทธิ์ `funnel` ใน tailnet ACL ก่อน ไม่งั้นคำสั่งจะ error
 
+### 7C. ngrok — ไม่ต้องมีโดเมน ไม่ต้องเปิดพอร์ต ⭐
+
+ngrok เปิด outbound connection ออกไปเอง แล้วรับ traffic กลับผ่าน tunnel นั้น
+→ **ไม่ต้อง forward port ไม่ต้องแตะ DNS และไม่ต้องเปิด 80/443 ที่ firewall เลย**
+
+> ⛔ **ต้องขอจากเจ้าของระบบ:** ngrok authtoken + โดเมนถาวรที่จองไว้แล้ว
+> (ดูได้ที่ dashboard.ngrok.com → Domains) **อย่าสร้างโดเมนสุ่มเอง** — โดเมนสุ่ม
+> เปลี่ยนทุกครั้งที่ restart แล้ว Webhook URL ใน LINE จะเสียทันที
+
+> ⚠️ **ngrok แผนฟรีรัน agent ได้ทีละ 1 ตัวเท่านั้น** และ 1 โดเมนจองได้ 1 tunnel
+> ถ้ามี ngrok ตัวอื่นรันอยู่ (เช่นบนเครื่อง dev) **ต้องปิดก่อน** ไม่งั้น VPS จะจองโดเมนไม่ได้
+> → error `ERR_NGROK_108` แปลว่ามีตัวอื่นค้างอยู่
+
+**1) ติดตั้ง + ใส่ authtoken**
+```bash
+curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+  | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+  | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install -y ngrok
+
+ngrok config add-authtoken <authtoken จากเจ้าของระบบ>
+ngrok config check                         # ต้องได้ "Valid configuration file"
+```
+
+**2) ทำเป็น systemd service — ห้ามรันมือ**
+
+รันมือแล้วปิด terminal = tunnel ตาย = **บอทเงียบโดยไม่มี error ให้เห็น**
+service นี้จะสตาร์ทเองทุกครั้งที่ VPS reboot
+
+```bash
+NGROK_DOMAIN=<โดเมนที่จองไว้>.ngrok-free.dev      # ← แก้ตรงนี้
+
+sudo tee /etc/systemd/system/ngrok-slipingman.service >/dev/null <<EOF
+[Unit]
+Description=ngrok tunnel -> SlipingMan bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=$(command -v ngrok) http --url=$NGROK_DOMAIN 3000 --log=stdout
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now ngrok-slipingman
+```
+
+heredoc นี้ **ไม่ได้ครอบ `EOF` ด้วยเครื่องหมายคำพูด** โดยตั้งใจ — `$USER`
+และ `$(command -v ngrok)` ต้องถูกแทนค่าตอนสร้างไฟล์ (systemd ต้องการ path เต็ม)
+
+> ngrok เก่ากว่า v3.19 ไม่รู้จัก `--url=` ให้ใช้ `--domain=` แทน
+> เช็คด้วย `ngrok version` — ถ้า service ขึ้น `unknown flag` นี่คือสาเหตุ
+
+**3) ตรวจ**
+```bash
+systemctl is-active ngrok-slipingman        # ต้องได้ active
+sleep 5
+curl -s https://$NGROK_DOMAIN/health        # ต้องได้ JSON เดียวกับข้อ 6.1
+```
+
+ไม่ผ่าน → `journalctl -u ngrok-slipingman -n 30 --no-pager`
+
+| ที่เห็นใน log | แปลว่า |
+|---|---|
+| `ERR_NGROK_108` | มี ngrok ตัวอื่นรันอยู่ที่อื่น — ปิดก่อน |
+| `ERR_NGROK_105` | authtoken ผิด/ไม่มี → `ngrok config add-authtoken` ใหม่ |
+| `failed to dial 127.0.0.1:3000` | `bot` ยังไม่ขึ้น → กลับไปข้อ 5 |
+
+**4) จุดที่ต้องระวังตอน Verify**
+
+ngrok แผนฟรีมีหน้าเตือน interstitial คั่นสำหรับ request ที่ดูเหมือนเบราว์เซอร์
+webhook ของ LINE เป็น POST + JSON ซึ่ง**ควร**ผ่าน แต่ต้องพิสูจน์ด้วยข้อ 8 —
+ถ้า `webhook/test` ได้ `statusCode:200` คือผ่านจริง
+ถ้าได้ `statusCode:` แปลก ๆ ทั้งที่ `curl /health` ผ่าน ให้สงสัย interstitial ก่อน
+
 ### หลังได้ URL แล้ว
 ```bash
-echo "PUBLIC_URL=https://bot.example.com" >> .env
+echo "PUBLIC_URL=https://<URL ที่ได้จาก 7A/7B/7C>" >> .env
 docker compose restart bot                 # ปุ่มส่งออก CSV จะกลับมา
 ```
 
 ### firewall
 ```bash
+# 7A (Caddy) — ต้องเปิด 80/443
 sudo ufw allow 22,80,443/tcp && sudo ufw --force enable
-sudo ufw status                            # ต้องไม่มี 3000 / 8101
+
+# 7B / 7C (Tailscale / ngrok) — tunnel ต่อออกเอง เปิดแค่ ssh พอ
+sudo ufw allow 22/tcp && sudo ufw --force enable
+
+sudo ufw status                            # ต้องไม่มี 3000 / 8101 ไม่ว่าวิธีไหน
 ```
 
 ---
