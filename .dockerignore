@@ -1,0 +1,26 @@
+# ห้ามเข้า image เด็ดขาด — ความลับ/ข้อมูลจริง
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+
+# ของหนักที่ build ใหม่ได้
+node_modules/
+bench/
+assets/
+.git/
+.github/
+
+# ไม่จำเป็นตอนรัน
+test/
+# scripts/ ไม่ ignore — weekly.mjs ต้องรันในคอนเทนเนอร์ (มันเข้าถึง DB ใน volume)
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore
+.mcp.json
+dev.sh

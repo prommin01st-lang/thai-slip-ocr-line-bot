@@ -1,0 +1,33 @@
+{
+  "name": "slipingman-line-assistant",
+  "version": "0.1.0",
+  "description": "LINE bot อ่านสลิปโอน/ใบเสร็จ/ใบเงินเดือนไทย → JSON โดยต่อกับ slip-ocr-th",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning test/queue.test.js && node --disable-warning=ExperimentalWarning test/flex.test.js && node --disable-warning=ExperimentalWarning test/ledger.test.js && node --disable-warning=ExperimentalWarning test/nlu.test.js && node --disable-warning=ExperimentalWarning test/features.test.js",
+    "dev:all": "./dev.sh",
+    "tunnel": "tailscale funnel --bg 3000",
+    "tunnel:off": "tailscale funnel --https=443 off",
+    "richmenu": "node scripts/richmenu.mjs",
+    "weekly": "node --disable-warning=ExperimentalWarning scripts/weekly.mjs"
+  },
+  "keywords": [
+    "line",
+    "messaging-api",
+    "ocr",
+    "thai",
+    "slip"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^11.2.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}

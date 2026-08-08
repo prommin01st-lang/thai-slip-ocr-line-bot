@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "line-bot": {
+      "command": "npx",
+      "args": ["-y", "@line/line-bot-mcp-server"],
+      "env": {
+        "CHANNEL_ACCESS_TOKEN": "${LINE_CHANNEL_ACCESS_TOKEN}",
+        "DESTINATION_USER_ID": "${LINE_DESTINATION_USER_ID}"
+      }
+    }
+  }
+}

@@ -1,0 +1,49 @@
+# docker compose up -d --build
+#
+# 2 service แยกกันตามภาษา/ทรัพยากร:
+#   ocr  = Python + PaddleOCR (CPU, ~720MB RAM)  — ไม่เปิดพอร์ตออกนอก
+#   bot  = Node + Express      (~90MB RAM)        — รับ webhook จาก LINE
+#
+# 🔒 ไม่มี secret ในไฟล์นี้ — ทุกอย่างอ่านจาก .env (ซึ่ง gitignore ไว้)
+#    คัดลอกจาก .env.example แล้วเติมค่าเอง
+
+services:
+  ocr:
+    build: ./ocr
+    restart: unless-stopped
+    environment:
+      # ตั้ง SLIP_OCR_TOKEN ใน .env แล้วทั้งสอง service จะใช้ค่าเดียวกัน
+      SLIP_OCR_TOKEN: ${OCR_TOKEN:-}
+    # ไม่ publish พอร์ตออกนอกเครื่อง — ให้ bot เรียกผ่าน network ภายในเท่านั้น
+    expose:
+      - "8101"
+    # PaddleOCR ใช้ CPU หนักตอน OCR — จำกัดไว้ไม่ให้กินทั้งเครื่อง (VPS 2 cores)
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1600M
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      ocr:
+        condition: service_healthy
+    env_file:
+      - .env                       # LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN
+    environment:
+      PORT: 3000
+      OCR_ENDPOINT: http://ocr:8101   # ชื่อ service ใน compose network
+      OCR_TIMEOUT_MS: ${OCR_TIMEOUT_MS:-120000}
+    ports:
+      - "127.0.0.1:3000:3000"      # ผูกกับ localhost เท่านั้น — ให้ reverse proxy (Caddy) ต่อหน้า
+    volumes:
+      - bot-data:/app/data         # SQLite ต้องอยู่รอดตอน recreate container
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  bot-data:

@@ -1,0 +1,79 @@
+{
+  "transfer": {
+    "amount": "250.00",
+    "currency": "THB",
+    "date": "2026-07-23",
+    "time": "14:35",
+    "ref": "015202607230001234",
+    "from": "นายสมชาย ใจดี",
+    "to": "ร้านกาแฟ มุมสงบ",
+    "banks": [
+      "kbank",
+      "promptpay"
+    ],
+    "confidence": "medium",
+    "warnings": [
+      "จำนวนเงินเดาจากค่ามากสุด (ไม่พบป้าย 'จำนวนเงิน/ยอดรวม')"
+    ],
+    "doc_type": "transfer"
+  },
+  "payslip": {
+    "doc_type": "payslip",
+    "company": "บริษัท ตัวอย่าง จำกัด",
+    "employee_name": "นายสมชาย ใจดี   รหัสพนักงาน: EMP001",
+    "employee_id": "EMP001",
+    "pay_period": {
+      "from": "2026-07-01",
+      "to": "2026-07-31"
+    },
+    "salary": "30,000.00",
+    "tax": "1,200.00",
+    "social_security": "750.00",
+    "gross_income": "32,000.00",
+    "total_deductions": "1,950.00",
+    "net_pay": "30,050.00",
+    "account_no": null,
+    "amounts": [
+      "32,000.00",
+      "30,050.00",
+      "30,000.00",
+      "1,950.00",
+      "1,200.00",
+      "750.00"
+    ],
+    "currency": "THB",
+    "confidence": "high",
+    "warnings": []
+  },
+  "receipt": {
+    "total": "32.10",
+    "currency": "THB",
+    "date": "2026-07-25",
+    "amounts": [
+      40,
+      32.1,
+      30,
+      7.9,
+      2.1
+    ],
+    "confidence": "high",
+    "warnings": [],
+    "doc_type": "receipt"
+  },
+  "failed": {
+    "amount": null,
+    "currency": "THB",
+    "date": null,
+    "time": null,
+    "ref": null,
+    "from": null,
+    "to": null,
+    "banks": [],
+    "confidence": "low",
+    "warnings": [
+      "ไม่พบจำนวนเงิน",
+      "ไม่พบวันที่"
+    ],
+    "doc_type": "unknown"
+  }
+}

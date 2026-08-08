@@ -1,0 +1,566 @@
+// flex.js — ผล JSON จาก slip-ocr-th → Flex Message ภาษาไทย
+//
+// parser ทุกตัวคืน confidence: high|medium|low + warnings[] มาด้วย — เอามาแสดงตรง ๆ
+// ดีกว่าโชว์ตัวเลขเฉย ๆ เพราะ OCR ไทยยังเพี้ยนได้ ผู้ใช้ควรเห็นว่าค่าไหน "เดา"
+
+const CONF = {
+  high: { label: "แม่นยำสูง", color: "#2E7D5B", bg: "#E3F3EB" },
+  medium: { label: "ควรตรวจทาน", color: "#9A6B12", bg: "#FBF0DA" },
+  low: { label: "ไม่มั่นใจ", color: "#A63D3D", bg: "#F8E3E3" },
+};
+
+const DOC = {
+  transfer: { title: "สลิปโอนเงิน", emoji: "💸" },
+  payslip: { title: "ใบเงินเดือน", emoji: "🧾" },
+  receipt: { title: "ใบเสร็จ", emoji: "🛒" },
+  unknown: { title: "เอกสารไม่ทราบชนิด", emoji: "❓" },
+};
+
+const BANK_NAMES = {
+  kbank: "กสิกรไทย", scb: "ไทยพาณิชย์", bbl: "กรุงเทพ", ktb: "กรุงไทย",
+  bay: "กรุงศรี", ttb: "ทีทีบี", gsb: "ออมสิน",
+  truemoney: "TrueMoney", promptpay: "พร้อมเพย์",
+};
+
+const has = (v) => v !== null && v !== undefined && v !== "" &&
+  !(Array.isArray(v) && v.length === 0);
+
+/** แถว label/value หนึ่งบรรทัด — ข้ามไปถ้าไม่มีค่า */
+function row(label, value, opts = {}) {
+  if (!has(value)) return null;
+  return {
+    type: "box",
+    layout: "baseline",
+    spacing: "sm",
+    contents: [
+      { type: "text", text: label, color: "#8A8A8A", size: "sm", flex: 4 },
+      {
+        type: "text",
+        text: String(value),
+        wrap: true,
+        color: opts.color || "#333333",
+        size: opts.size || "sm",
+        weight: opts.weight || "regular",
+        flex: 7,
+      },
+    ],
+  };
+}
+
+/** ยอดเงินตัวใหญ่กลางการ์ด — ตัวเลขคือสิ่งที่ผู้ใช้มาดู */
+function bigAmount(amount, currency) {
+  if (!has(amount)) return null;
+  return {
+    type: "box",
+    layout: "baseline",
+    contents: [
+      { type: "text", text: String(amount), size: "xxl", weight: "bold", color: "#1F1F1F", flex: 0 },
+      { type: "text", text: ` ${currency || "THB"}`, size: "sm", color: "#8A8A8A", margin: "sm", flex: 0 },
+    ],
+  };
+}
+
+function warningBox(warnings) {
+  if (!has(warnings)) return null;
+  return {
+    type: "box",
+    layout: "vertical",
+    margin: "lg",
+    paddingAll: "md",
+    cornerRadius: "md",
+    backgroundColor: "#FBF0DA",
+    spacing: "xs",
+    contents: warnings.map((w) => ({
+      type: "text", text: `• ${w}`, size: "xxs", color: "#9A6B12", wrap: true,
+    })),
+  };
+}
+
+/** แถวข้อมูลตาม doc_type — แต่ละชนิดมีฟิลด์คนละชุด */
+function bodyRows(d, docType) {
+  if (docType === "payslip") {
+    const period = d.pay_period?.from
+      ? `${d.pay_period.from}${d.pay_period.to ? ` – ${d.pay_period.to}` : ""}`
+      : null;
+    return [
+      row("บริษัท", d.company),
+      row("พนักงาน", d.employee_name),
+      row("รหัสพนักงาน", d.employee_id),
+      row("งวดจ่าย", period),
+      row("เงินเดือน", d.salary),
+      row("รวมรายได้", d.gross_income),
+      row("ภาษี", d.tax),
+      row("ประกันสังคม", d.social_security),
+      row("รวมหัก", d.total_deductions),
+      row("เลขบัญชี", d.account_no),
+    ];
+  }
+  if (docType === "receipt") {
+    return [row("วันที่", d.date)];
+  }
+  // transfer / unknown
+  const banks = (d.banks || []).map((b) => BANK_NAMES[b] || b).join(", ");
+  return [
+    row("วันที่", d.date),
+    row("เวลา", d.time),
+    row("จาก", d.from),
+    row("ไปยัง", d.to),
+    row("ธนาคาร", banks),
+    row("เลขอ้างอิง", d.ref, { size: "xs" }),
+  ];
+}
+
+/** ผลลัพธ์ → Flex bubble (ส่งเป็น messages[0] ได้เลย) */
+export function resultBubble(d) {
+  const docType = d.doc_type || "unknown";
+  const doc = DOC[docType] || DOC.unknown;
+  const conf = CONF[d.confidence] || CONF.low;
+
+  // ใบเงินเดือนเน้น "เงินสุทธิ", ใบเสร็จเน้น "ยอดรวม", สลิปโอนเน้น "จำนวนเงิน"
+  const headline =
+    docType === "payslip" ? d.net_pay : docType === "receipt" ? d.total : d.amount;
+  const headlineLabel =
+    docType === "payslip" ? "เงินได้สุทธิ" : docType === "receipt" ? "ยอดรวม" : "จำนวนเงิน";
+
+  const rows = bodyRows(d, docType).filter(Boolean);
+
+  const body = [];
+  if (has(headline)) {
+    body.push({ type: "text", text: headlineLabel, size: "xs", color: "#8A8A8A" });
+    body.push(bigAmount(headline, d.currency));
+  } else {
+    body.push({
+      type: "text",
+      text: "อ่านยอดเงินไม่ออก",
+      size: "md",
+      weight: "bold",
+      color: "#A63D3D",
+      wrap: true,
+    });
+  }
+  if (rows.length) {
+    body.push({ type: "separator", margin: "lg" });
+    body.push({ type: "box", layout: "vertical", margin: "lg", spacing: "sm", contents: rows });
+  }
+  const warn = warningBox(d.warnings);
+  if (warn) body.push(warn);
+
+  return {
+    type: "bubble",
+    header: {
+      type: "box",
+      layout: "horizontal",
+      backgroundColor: "#F7F5F2",
+      paddingAll: "md",
+      contents: [
+        {
+          type: "text",
+          text: `${doc.emoji} ${doc.title}`,
+          weight: "bold",
+          size: "sm",
+          color: "#1F1F1F",
+          gravity: "center",
+          flex: 1,
+        },
+        {
+          type: "box",
+          layout: "vertical",
+          backgroundColor: conf.bg,
+          cornerRadius: "md",
+          paddingAll: "xs",
+          paddingStart: "sm",
+          paddingEnd: "sm",
+          flex: 0,
+          contents: [{ type: "text", text: conf.label, size: "xxs", color: conf.color, weight: "bold" }],
+        },
+      ],
+    },
+    body: { type: "box", layout: "vertical", paddingAll: "lg", contents: body },
+  };
+}
+
+/** ห่อ bubble เป็น message พร้อมส่ง (altText โผล่ใน notification/แชทลิสต์) */
+export function resultMessage(d) {
+  const doc = DOC[d.doc_type] || DOC.unknown;
+  const amount = d.net_pay || d.total || d.amount;
+  return {
+    type: "flex",
+    altText: amount ? `${doc.title}: ${amount} ${d.currency || "THB"}` : `${doc.title} (อ่านยอดไม่ออก)`,
+    contents: resultBubble(d),
+  };
+}
+
+// ==================== การ์ดอเนกประสงค์ ====================
+//
+// ทุกคำตอบของบอทเป็นการ์ด ไม่ใช่ข้อความเปล่า — อ่านง่ายกว่าและดูเป็นระบบเดียวกัน
+// ใช้ tone บอกอารมณ์ของข้อความ (สำเร็จ / เตือน / ผิดพลาด) แทนที่จะพึ่ง emoji อย่างเดียว
+
+const TONES = {
+  neutral: { bg: "#F7F5F2", fg: "#1F1F1F", soft: "#EFEBE5" },
+  success: { bg: "#E3F3EB", fg: "#2E7D5B", soft: "#EFF8F3" },
+  warn: { bg: "#FBF0DA", fg: "#9A6B12", soft: "#FDF7EC" },
+  danger: { bg: "#F8E3E3", fg: "#A63D3D", soft: "#FCF0F0" },
+  info: { bg: "#E8EEF6", fg: "#2E5B7D", soft: "#F2F6FA" },
+};
+
+const txt = (text, o = {}) => ({
+  type: "text", text: String(text), wrap: true,
+  size: o.size ?? "sm", color: o.color ?? "#333333",
+  weight: o.weight, align: o.align, margin: o.margin, flex: o.flex,
+});
+
+/** แถว label→value; ถ้าไม่มี label จะเป็นบูลเล็ตบรรทัดเดียว */
+function kvRow(r, tone) {
+  if (r.value === undefined || r.value === null || r.value === "") {
+    return txt(`• ${r.label ?? r.text ?? ""}`, { size: "xs", color: "#555555" });
+  }
+  return {
+    type: "box", layout: "baseline", spacing: "sm",
+    contents: [
+      txt(r.label, { size: "xs", color: "#8A8A8A", flex: 4 }),
+      txt(r.value, { size: "sm", flex: 6, align: "end", weight: r.strong ? "bold" : undefined,
+                     color: r.strong ? tone.fg : "#333333" }),
+    ],
+  };
+}
+
+/**
+ * ปุ่มในการ์ด — รองรับ 3 แบบ
+ *   {data}          postback ธรรมดา (ทำงานทันที)
+ *   {text}          ส่งข้อความแทนผู้ใช้
+ *   {fill}          เปิดแป้นพิมพ์พร้อม**เติมข้อความไว้ให้** → ผู้ใช้พิมพ์ต่อแค่ตัวเลข
+ *                   (ใช้กับคำสั่งที่ต้องมีค่าอิสระ เช่น "แก้ 12 " แล้วให้พิมพ์ยอด)
+ */
+function button(a, tone) {
+  let action;
+  if (a.fill !== undefined) {
+    action = { type: "postback", label: a.label, data: a.data ?? "act=noop",
+               inputOption: "openKeyboard", fillInText: a.fill };
+  } else if (a.data) {
+    action = { type: "postback", label: a.label, data: a.data, displayText: a.displayText };
+  } else {
+    action = { type: "message", label: a.label, text: a.text };
+  }
+  return {
+    type: "button", height: "sm",
+    style: a.primary ? "primary" : "secondary",
+    color: a.primary ? tone.fg : undefined,
+    action,
+  };
+}
+
+/**
+ * การ์ดมาตรฐานของบอท — ใช้แทน `{type:"text"}` ทุกที่
+ *
+ * ตัวอย่าง: card({ title:"บันทึกแล้ว", tone:"success", big:"60.00", bigLabel:"รายจ่าย",
+ *                  rows:[{label:"หมวด", value:"อาหาร"}], actions:[{label:"ลบ", data:"act=del&id=1"}] })
+ */
+export function card({
+  title, tone = "neutral", emoji, text, big, bigLabel, bigUnit = "บาท",
+  rows = [], notes = [], actions = [], quickReply, altText,
+} = {}) {
+  const t = TONES[tone] ?? TONES.neutral;
+  const body = [];
+
+  if (big !== undefined && big !== null) {
+    if (bigLabel) body.push(txt(bigLabel, { size: "xs", color: "#8A8A8A" }));
+    body.push({
+      type: "box", layout: "baseline", contents: [
+        txt(big, { size: "xxl", weight: "bold", color: t.fg, flex: 0 }),
+        ...(bigUnit ? [txt(` ${bigUnit}`, { size: "sm", color: "#8A8A8A", margin: "sm", flex: 0 })] : []),
+      ],
+    });
+  }
+  if (text) body.push(txt(text, { margin: body.length ? "lg" : "none", color: "#444444" }));
+
+  const validRows = rows.filter(Boolean);
+  if (validRows.length) {
+    if (body.length) body.push({ type: "separator", margin: "lg" });
+    body.push({
+      type: "box", layout: "vertical", margin: "lg", spacing: "sm",
+      contents: validRows.map((r) => kvRow(r, t)),
+    });
+  }
+
+  const validNotes = notes.filter(Boolean);
+  if (validNotes.length) {
+    body.push({
+      type: "box", layout: "vertical", margin: "lg", paddingAll: "md", cornerRadius: "md",
+      backgroundColor: TONES.warn.soft, spacing: "xs",
+      contents: validNotes.map((n) => txt(`• ${n}`, { size: "xxs", color: TONES.warn.fg })),
+    });
+  }
+
+  // LINE ไม่ยอมรับ body ที่ว่างเปล่า — กันไว้ไม่ให้ทั้งข้อความหายไปเงียบ ๆ
+  if (!body.length) body.push(txt(title || "—"));
+
+  const bubble = {
+    type: "bubble",
+    header: {
+      type: "box", layout: "horizontal", backgroundColor: t.bg, paddingAll: "md",
+      contents: [txt(`${emoji ? emoji + " " : ""}${title ?? ""}`,
+                     { weight: "bold", size: "sm", color: t.fg })],
+    },
+    body: { type: "box", layout: "vertical", paddingAll: "lg", contents: body },
+  };
+  if (actions.length) {
+    bubble.footer = {
+      type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
+      contents: actions.map((a) => button(a, t)),
+    };
+  }
+
+  const msg = {
+    type: "flex",
+    altText: (altText ?? `${title ?? ""} ${big ?? ""} ${text ?? ""}`).trim().slice(0, 400) || "ข้อความ",
+    contents: bubble,
+  };
+  if (quickReply) msg.quickReply = quickReply;
+  return msg;
+}
+
+/** ข้อความแจ้ง error → การ์ดโทนแดง */
+export function errorMessage(text, actions = []) {
+  return card({ title: "เกิดข้อผิดพลาด", emoji: "⚠️", tone: "danger", text, actions });
+}
+
+// ==================== quick reply ====================
+
+const pb = (label, data) => ({ type: "action", action: { type: "postback", label, data } });
+
+/**
+ * ถามว่าผู้ใช้เป็นผู้โอนหรือผู้รับ — สลิปบอกแค่ "จาก A ไป B" เท่านั้น
+ * ตอบครั้งเดียวแล้วระบบจำบัญชีไว้ ครั้งต่อไปเดาเองได้
+ *
+ * ใช้ **ปุ่มในการ์ด** ไม่ใช่ quick reply — ชิป quick reply ลอยอยู่เหนือแป้นพิมพ์
+ * เลื่อนแชทหนีแล้วหาย ส่วนปุ่มในการ์ดอยู่ติดกับข้อความ กดย้อนหลังได้
+ */
+export function askDirection(txnId, amount) {
+  return card({
+    title: "รายการนี้เป็นรับหรือจ่าย?", emoji: "❓", tone: "warn",
+    big: amount, bigLabel: "ยอด",
+    text: "ตอบครั้งเดียว ครั้งต่อไปผมจำได้เอง",
+    actions: [
+      { label: "💰 เป็นรายรับ", data: `act=dir&id=${txnId}&v=in`, primary: true },
+      { label: "💸 เป็นรายจ่าย", data: `act=dir&id=${txnId}&v=out` },
+      { label: "ข้ามไปก่อน", data: `act=skip&id=${txnId}` },
+    ],
+    altText: `รายการ ${amount ?? ""} เป็นรับหรือจ่าย?`,
+  });
+}
+
+/** ปุ่มจัดการรายการที่เพิ่งบันทึก */
+export function txnActions(txnId, text) {
+  return {
+    type: "text",
+    text,
+    quickReply: { items: [pb("🗑 ลบรายการนี้", `act=del&id=${txnId}`), pb("📊 สรุป", "act=summary")] },
+  };
+}
+
+const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                  "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+
+/** '2026-08-01' + (-1) → '2026-07' — ใช้ทำปุ่มเลื่อนเดือน */
+export function shiftMonth(iso, delta) {
+  const [y, m] = String(iso ?? "").split("-").map(Number);
+  if (!y || !m) return "";
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+/** '2026-05-29' → 'พ.ค. 69' (พ.ศ.) — อ่านง่ายกว่าเลขล้วนบนปุ่ม */
+export function thaiMonth(iso) {
+  if (!iso) return "";
+  const [y, m] = iso.split("-").map(Number);
+  return `${TH_MONTH[(m || 1) - 1]} ${String((y || 2000) + 543).slice(-2)}`;
+}
+
+/**
+ * ถามว่าจะลงรายการไว้เดือนไหน — สลิปเก่าที่เพิ่งส่งมาวันนี้เป็นเคสที่สับสนที่สุด
+ * (ลงตามสลิป = ถูกในแง่บัญชี · ลงเดือนนี้ = ตรงกับที่ผู้ใช้เพิ่งจ่ายจริง)
+ */
+export function askPeriod(txnId, slipDate, todayIso) {
+  return card({
+    title: "สลิปใบนี้เป็นของเดือนก่อน", emoji: "📅", tone: "warn",
+    rows: [
+      { label: "วันที่บนสลิป", value: `${slipDate} (${thaiMonth(slipDate)})` },
+      { label: "เดือนปัจจุบัน", value: thaiMonth(todayIso) },
+    ],
+    text: "จะให้ลงยอดนี้ไว้เดือนไหนครับ?",
+    altText: `สลิปลงวันที่ ${slipDate} — จะลงเดือนไหน?`,
+    actions: [
+      { label: `📅 ลงเดือน ${thaiMonth(slipDate)}`, data: `act=period&id=${txnId}&v=slip`,
+        primary: true },
+      { label: `📆 ลงเดือนนี้ (${thaiMonth(todayIso)})`, data: `act=period&id=${txnId}&v=now` },
+    ],
+  });
+}
+
+// ==================== สรุปเป็น Flex ====================
+
+const money = (s) => ({ type: "text", text: s, size: "sm", align: "end", flex: 0 });
+
+function sumRow(label, value, color = "#333333", bold = false) {
+  return {
+    type: "box", layout: "horizontal", contents: [
+      { type: "text", text: label, size: "sm", color: "#8A8A8A" },
+      { ...money(value), color, weight: bold ? "bold" : "regular" },
+    ],
+  };
+}
+
+/** สรุปรายรับ-รายจ่าย → Flex bubble (อ่านง่ายกว่าข้อความเปล่ามาก) */
+export function summaryBubble(s, fromCents) {
+  const body = [
+    { type: "text", text: "รายรับ-รายจ่าย", size: "xs", color: "#8A8A8A" },
+    { type: "text", text: `${s.from} — ${s.to}`, size: "xxs", color: "#B0B0B0", margin: "xs" },
+    { type: "separator", margin: "lg" },
+    {
+      type: "box", layout: "vertical", margin: "lg", spacing: "sm", contents: [
+        sumRow("รายรับ", `${fromCents(s.income_cents)} ฿`, "#2E7D5B"),
+        sumRow("รายจ่าย", `${fromCents(s.expense_cents)} ฿`, "#A63D3D"),
+        { type: "separator", margin: "md" },
+        sumRow("คงเหลือ", `${fromCents(s.net_cents)} ฿`,
+            s.net_cents >= 0 ? "#1F1F1F" : "#A63D3D", true),
+      ],
+    },
+  ];
+
+  if (s.top_categories?.length) {
+    body.push({ type: "separator", margin: "lg" });
+    body.push({ type: "text", text: "ใช้มากสุด", size: "xxs", color: "#8A8A8A", margin: "lg" });
+    body.push({
+      type: "box", layout: "vertical", margin: "sm", spacing: "xs",
+      contents: s.top_categories.map((c) => sumRow(c.category, `${c.amount} ฿`)),
+    });
+  }
+
+  const notes = [];
+  // สลิปลงวันที่ตามที่พิมพ์บนใบ ซึ่งมักเป็นเดือนก่อน — ถ้าไม่บอก ผู้ใช้จะคิดว่ายอดหาย
+  if (s.outside_n) {
+    notes.push(`📅 มีอีก ${s.outside_n} รายการอยู่นอกช่วงนี้` +
+               (s.outside_oldest ? ` (${s.outside_oldest} – ${s.outside_newest})` : "") +
+               ` — กดปุ่มล่างดูทั้งหมด`);
+  }
+  if (s.unknown_n) notes.push(`⚠️ ${s.unknown_n} รายการยังไม่รู้ว่ารับหรือจ่าย`);
+  if (s.pending_n) notes.push(`📝 ${s.pending_n} รายการรอตรวจยอด`);
+  if (notes.length) {
+    body.push({
+      type: "box", layout: "vertical", margin: "lg", paddingAll: "md", cornerRadius: "md",
+      backgroundColor: "#FBF0DA", spacing: "xs",
+      contents: notes.map((t) => ({ type: "text", text: t, size: "xxs", color: "#9A6B12", wrap: true })),
+    });
+  }
+
+  const bubble = {
+    type: "bubble",
+    header: {
+      type: "box", layout: "horizontal", backgroundColor: "#F7F5F2", paddingAll: "md",
+      contents: [{ type: "text", text: `📊 ${s.title ?? "สรุปรายเดือน"}`,
+                   weight: "bold", size: "sm", color: "#1F1F1F" }],
+    },
+    body: { type: "box", layout: "vertical", paddingAll: "lg", contents: body },
+    footer: {
+      type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
+      contents: [
+        ...(s.outside_n ? [{
+          type: "button", height: "sm", style: "primary", color: "#2E5B7D",
+          action: { type: "postback", label: "📅 ดูสรุปทั้งหมด", data: "act=sum&r=all" },
+        }] : []),
+        // เลื่อนดูเดือนก่อน/ถัดไปด้วยปุ่ม — ไม่ต้องพิมพ์ "สรุป 2026-05" เอง
+        {
+          type: "box", layout: "horizontal", spacing: "sm",
+          contents: [
+            { type: "button", height: "sm", style: "secondary",
+              action: { type: "postback", label: "◀ เดือนก่อน",
+                        data: `act=sum&m=${shiftMonth(s.from, -1)}` } },
+            { type: "button", height: "sm", style: "secondary",
+              action: { type: "postback", label: "เดือนถัดไป ▶",
+                        data: `act=sum&m=${shiftMonth(s.from, 1)}` } },
+          ],
+        },
+        { type: "button", height: "sm", style: "secondary",
+          action: { type: "postback", label: "🧾 ดูรายการ", data: "act=list" } },
+      ],
+    },
+  };
+
+  return {
+    type: "flex",
+    altText: `สรุป: รับ ${fromCents(s.income_cents)} จ่าย ${fromCents(s.expense_cents)} คงเหลือ ${fromCents(s.net_cents)}`,
+    contents: bubble,
+  };
+}
+
+// ==================== รายการล่าสุด (แก้/ลบ) ====================
+
+const DIR_ICON = { in: "💰", out: "💸", unknown: "❓" };
+
+/** รายการล่าสุดพร้อมปุ่มลบต่อแถว */
+export function txnListBubble(rows, fromCents) {
+  if (!rows.length) {
+    return { type: "text", text: "ยังไม่มีรายการครับ — ส่งสลิปหรือพิมพ์ “กาแฟ 60” ได้เลย" };
+  }
+  const items = rows.map((t) => ({
+    type: "box", layout: "vertical", margin: "md", spacing: "xs",
+    contents: [
+      {
+        type: "box", layout: "baseline", contents: [
+          { type: "text", text: `${DIR_ICON[t.direction] ?? "•"} #${t.id}`, size: "xs",
+            color: "#8A8A8A", flex: 3 },
+          { type: "text", text: `${fromCents(t.amount_cents)} ฿`, size: "sm", weight: "bold",
+            align: "end", color: t.direction === "in" ? "#2E7D5B" : "#1F1F1F", flex: 4 },
+        ],
+      },
+      {
+        type: "text",
+        text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty].filter(Boolean).join(" · ") || "—",
+        size: "xxs", color: "#B0B0B0", wrap: true,
+      },
+      {
+        // ปุ่มต่อแถว — ทุกอย่างกดได้ ไม่ต้องพิมพ์เลขรายการเอง
+        // "แก้ยอด" ใช้ fillInText เติม "แก้ 12 " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
+        type: "box", layout: "horizontal", spacing: "sm", margin: "sm",
+        contents: [
+          { type: "button", style: "link", height: "sm",
+            action: { type: "postback", label: "🗑 ลบ", data: `act=del&id=${t.id}` } },
+          { type: "button", style: "link", height: "sm",
+            action: { type: "postback", label: "✏️ แก้ยอด",
+                      data: `act=prompt&kind=edit&id=${t.id}`,
+                      inputOption: "openKeyboard", fillInText: `แก้ ${t.id} ` } },
+          ...(t.direction === "unknown" ? [
+            { type: "button", style: "link", height: "sm",
+              action: { type: "postback", label: "รับ/จ่าย?", data: `act=askdir&id=${t.id}` } },
+          ] : []),
+        ],
+      },
+      { type: "separator" },
+    ],
+  }));
+
+  return {
+    type: "flex",
+    altText: `รายการล่าสุด ${rows.length} รายการ`,
+    contents: {
+      type: "bubble",
+      header: {
+        type: "box", layout: "horizontal", backgroundColor: "#F7F5F2", paddingAll: "md",
+        contents: [{ type: "text", text: "🧾 รายการล่าสุด", weight: "bold", size: "sm" }],
+      },
+      body: {
+        type: "box", layout: "vertical", paddingAll: "lg",
+        contents: [
+          { type: "text", text: "ทุกอย่างกดได้ — ไม่ต้องพิมพ์เลขรายการเอง",
+            size: "xxs", color: "#8A8A8A", wrap: true },
+          ...items,
+        ],
+      },
+      footer: {
+        type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
+        contents: [{ type: "button", height: "sm", style: "secondary",
+                     action: { type: "postback", label: "📊 ดูสรุป", data: "act=summary" } }],
+      },
+    },
+  };
+}

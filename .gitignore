@@ -1,0 +1,25 @@
+node_modules/
+.env
+logs/
+*.log
+
+# bench — ของหนัก/ของที่สร้างใหม่ได้ ไม่ commit
+bench/llama/
+bench/llama.cpp/
+bench/models/
+bench/images/
+bench/.resized/
+bench/baseline.json
+bench/results.json
+bench/.venv-ocr/
+# ผลจาก dataset สลิปจริง — มี PII (ชื่อ/เลขบัญชี) ห้าม commit
+bench/results_dataset*.json
+
+# ฐานข้อมูล — มีข้อมูลการเงินของคนจริง ห้าม commit
+data/
+*.db
+*.db-wal
+*.db-shm
+bench/results_ocr.json
+__pycache__/
+*.pyc

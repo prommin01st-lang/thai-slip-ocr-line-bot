@@ -1,0 +1,5 @@
+# PaddleOCR (CPU) — ไม่มี torch, ไม่มี CUDA
+# pin ไว้ให้ build ซ้ำได้ผลเดิม (paddleocr 3.x เปลี่ยน API บ่อย)
+paddlepaddle==3.3.1
+paddleocr==3.7.0
+pillow>=10.0.0

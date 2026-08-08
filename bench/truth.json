@@ -1,0 +1,36 @@
+{
+  "_comment": "เฉลยที่ตรวจด้วยตาจากรูปจริง (ไม่ใช่ผล OCR ของระบบไหน) — ใช้ตัดสินว่า engine ไหนอ่านถูก",
+  "slip.png": {
+    "path": "samples/slip.png",
+    "kind": "transfer",
+    "note": "สลิปสังเคราะห์ พื้นขาว คอนทราสต์สูง — เคสง่ายที่สุด",
+    "amount": "250.00",
+    "date": "2026-07-23",
+    "time": "14:35",
+    "ref": "015202607230001234",
+    "from_contains": "สมชาย",
+    "to_contains": "กาแฟ",
+    "banks": ["kbank", "promptpay"]
+  },
+  "สลิปโอนเงิน.webp": {
+    "path": "Data/สลิปโอนเงิน.webp",
+    "kind": "transfer",
+    "note": "สลิป K+ จริง มีลายน้ำอาคารนูน + QR code — เคสจริงที่ต้องผ่าน",
+    "amount": "888.00",
+    "date": "2022-01-26",
+    "time": "05:10",
+    "ref": "123456789012345678",
+    "from_contains": "กสิกร",
+    "to_contains": "กสิกร",
+    "banks": ["kbank"]
+  },
+  "ecpay_slip.png": {
+    "path": "Data/ecpay_slip.png",
+    "kind": "payslip",
+    "note": "ใบแจ้งเงินได้ เป็นตารางเส้นกรอบ",
+    "net_pay": "51,350.00",
+    "gross_income": "51,500.00",
+    "total_deductions": "150.00",
+    "date": "2022-08-25"
+  }
+}
