@@ -13,7 +13,7 @@ import * as ocr from "./ocrClient.js";
 import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
-         summaryBubble, txnListBubble, categoryButtons } from "./flex.js";
+         summaryBubble, txnListBubble, categoryButtons, shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseEntry } from "./nlu.js";
 import { nowLocal } from "./db.js";
@@ -314,6 +314,8 @@ async function handleImage(event) {
 // export เพื่อให้เทสเรียกตรงได้ — การ์ด "ไม่มีรายการ" เคยกลืนยอดที่อยู่นอกช่วงมาแล้ว
 export function summaryMessage(userId, range = "month") {
   let from, to, title;
+  // ปุ่มเลื่อนเดือนใช้ได้เฉพาะตอนดูเป็นรายเดือน — "สัปดาห์นี้"/"ทั้งหมด" เลื่อนเดือนไม่ได้
+  const monthly = range === "month" || /^\d{4}-\d{2}$/.test(range);
   if (range === "week") {
     [from, to] = thisWeek(); title = "สรุปสัปดาห์นี้";
   } else if (range === "all") {
@@ -336,7 +338,8 @@ export function summaryMessage(userId, range = "month") {
     // ทั้งที่เพิ่งบันทึกยอดไปเมื่อครู่ → ดูเหมือนเงินหาย (ผู้ใช้แจ้งมาจริง)
     if (s.outside_n) {
       return card({
-        title: "ช่วงนี้ยังไม่มีรายการ", emoji: "📊", tone: "warn",
+        title: monthly ? `${thaiMonth(from)} ยังไม่มีรายการ` : "ช่วงนี้ยังไม่มีรายการ",
+        emoji: "📊", tone: "warn",
         text: `ช่วง ${from} – ${to} ไม่มีข้อมูล\nแต่ยอดของคุณไม่ได้หายไปไหนครับ`,
         rows: [
           { label: "มีอยู่นอกช่วงนี้", value: `${s.outside_n} รายการ` },
@@ -345,8 +348,14 @@ export function summaryMessage(userId, range = "month") {
             : []),
         ],
         notes: ["สลิปจะลงวันที่ตามที่พิมพ์บนใบ ซึ่งอาจเป็นเดือนก่อน"],
+        // ⚠️ ต้องมีปุ่มเลื่อนเดือนเหมือน summaryBubble ไม่งั้นพอเลื่อนไปเจอเดือนว่าง
+        // จะตันอยู่ตรงนั้น เลื่อนต่อไม่ได้ ต้องพิมพ์ "สรุป YYYY-MM" เองถึงจะออกมาได้
         actions: [
           { label: "📚 ดูสรุปทั้งหมด", data: "act=sum&r=all", primary: true },
+          ...(monthly ? [[
+            { label: "◀ เดือนก่อน", data: `act=sum&m=${shiftMonth(from, -1)}` },
+            { label: "เดือนถัดไป ▶", data: `act=sum&m=${shiftMonth(from, 1)}` },
+          ]] : []),
           { label: "🧾 ดูรายการล่าสุด", data: "act=list" },
         ],
       });
