@@ -105,6 +105,19 @@ const MIGRATIONS = [
     PRIMARY KEY (line_user_id, kind, period)
   );
   `,
+  // --- migration 3: ลิงก์ดาวน์โหลด CSV ชั่วคราว ---
+  // LINE ส่งไฟล์ให้ผู้ใช้ไม่ได้ (ไม่มี message type สำหรับไฟล์) → ต้องให้ลิงก์
+  // ไฟล์มีข้อมูลการเงินจริง ลิงก์จึงต้อง **เดาไม่ได้ + หมดอายุ + ผูกกับผู้ใช้คนเดียว**
+  `
+  CREATE TABLE export_tokens (
+    token        TEXT PRIMARY KEY,          -- สุ่ม 32 ไบต์ (ไม่ใช่ id ที่เดาได้)
+    line_user_id TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX export_tokens_exp ON export_tokens (expires_at);
+  `,
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {

@@ -189,4 +189,38 @@ assert.ok(pa.every((a) => /act=period&id=\d+&v=(slip|now)/.test(a.data)));
 assert.equal(thaiMonth("2026-05-29"), "พ.ค. 69");
 ok(`การ์ดถามเดือนถูกต้อง (${pa.map((a) => a.label).join(" | ")})`);
 
+// --- 11) ส่งออก CSV ---
+const { csv, count } = L.exportCsv(U);
+assert.ok(count > 0, "ต้องมีข้อมูลให้ส่งออก");
+assert.equal(csv.charCodeAt(0), 0xFEFF, "ต้องขึ้นต้นด้วย BOM ไม่งั้น Excel อ่านไทยเพี้ยน");
+const head = csv.replace(/^\uFEFF/, "").split("\r\n")[0];
+assert.ok(head.startsWith("id,วันที่,ประเภท,จำนวน"), `หัวตารางผิด: ${head}`);
+// รายการที่ลบ (rejected) ต้องไม่อยู่ในไฟล์
+assert.ok(!csv.split("\r\n").some((l) => l.startsWith(`${r3.txnId},`)),
+  "รายการที่ลบแล้วต้องไม่ถูกส่งออก");
+ok(`ส่งออก CSV ได้ ${count} แถว (มี BOM, ไม่รวมรายการที่ลบ)`);
+
+// escape ต้องถูก: คอมมา / อัญประกาศ / ขึ้นบรรทัดใหม่
+const E = "Uesc00000000000000000000000000001";
+L.ensureUser(E); L.grantConsent(E);
+L.recordEntry(E, { direction: "out", amountCents: 100, note: 'ก, "ข"\nค' });
+const line = L.exportCsv(E).csv.split("\r\n")[1];
+assert.ok(line.includes('"ก, ""ข""'), `escape ผิด: ${line}`);
+ok("escape CSV ถูกต้อง (คอมมา / อัญประกาศ / ขึ้นบรรทัด)");
+
+// token: เดาไม่ได้ · ใช้ครั้งเดียว · ผูกกับผู้ใช้คนเดียว
+const tk = L.createExportToken(U);
+assert.ok(tk.token.length >= 40, "token ต้องยาวพอจะเดาไม่ได้");
+assert.equal(L.consumeExportToken(tk.token), U, "ใช้ครั้งแรกต้องได้ userId");
+assert.equal(L.consumeExportToken(tk.token), null, "ใช้ซ้ำต้องถูกปฏิเสธ");
+assert.equal(L.consumeExportToken("ไม่มีอยู่จริง"), null);
+assert.equal(L.consumeExportToken(null), null);
+ok("token ส่งออก: สุ่ม · ใช้ครั้งเดียว · ปฏิเสธของปลอม");
+
+// token ต้องหายไปด้วยเมื่อผู้ใช้ลบข้อมูล (PDPA)
+const tk2 = L.createExportToken(E);
+L.deleteAllData(E);
+assert.equal(L.consumeExportToken(tk2.token), null, "ลบข้อมูลแล้ว token เดิมต้องใช้ไม่ได้");
+ok("ลบข้อมูลผู้ใช้ → ลิงก์ส่งออกที่ค้างอยู่ใช้ไม่ได้ทันที");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

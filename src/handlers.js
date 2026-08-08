@@ -58,6 +58,34 @@ const notFoundCard = (id) => card({
   actions: [{ label: "🧾 ดูรายการ", text: "รายการ" }],
 });
 
+/**
+ * การ์ดส่งออก CSV — LINE ส่งไฟล์ไม่ได้ จึงต้องให้ลิงก์ที่บอทเสิร์ฟเอง
+ * ต้องมี PUBLIC_URL ไม่งั้นลิงก์จะเป็น localhost ซึ่งมือถือเปิดไม่ได้
+ */
+const exportCard = (userId) => {
+  const { count } = L.exportCsv(userId);
+  if (!count) {
+    return card({ title: "ยังไม่มีข้อมูลให้ส่งออก", emoji: "📤", tone: "info",
+                  text: "ส่งสลิปหรือพิมพ์รายการเข้ามาก่อนนะครับ" });
+  }
+  if (!config.publicUrl) {
+    return card({
+      title: "ยังส่งออกไม่ได้", emoji: "⚠️", tone: "warn",
+      text: "ระบบยังไม่ได้ตั้งค่า PUBLIC_URL — แจ้งผู้ดูแลให้ตั้งก่อนครับ",
+    });
+  }
+  const { token, ttlMin } = L.createExportToken(userId);
+  return card({
+    title: "ส่งออกเป็น CSV", emoji: "📤", tone: "success",
+    rows: [{ label: "จำนวนรายการ", value: `${count} รายการ` },
+           { label: "ลิงก์หมดอายุใน", value: `${ttlMin} นาที` }],
+    text: "เปิดใน Google Sheets / Excel ได้เลย (รองรับภาษาไทย)",
+    notes: ["ลิงก์ใช้ได้ครั้งเดียว — ถ้าโหลดไม่ทันกดขอใหม่ได้"],
+    actions: [{ label: "⬇️ ดาวน์โหลด CSV", url: `${config.publicUrl}/export/${token}`, primary: true }],
+    altText: `ส่งออก ${count} รายการเป็น CSV`,
+  });
+};
+
 const settingsCard = (userId) => {
   const weeklyOn = L.getPref(userId, "weekly") === "on";
   const bs = L.getBudgets(userId);
@@ -72,6 +100,7 @@ const settingsCard = (userId) => {
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       { label: "📌 ตั้งงบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
       { label: "📌 ตั้งงบรายหมวด", fill: "งบ อาหาร ", data: "act=prompt&kind=budget" },
+      { label: "📤 ส่งออก CSV", data: "act=export" },
       { label: "🔒 ข้อมูลของฉัน", text: "ข้อมูลของฉัน" },
     ],
   });
@@ -339,6 +368,7 @@ async function handlePostback(event) {
     if (!t) return respond(event, notFoundCard(id));
     return respond(event, askDirection(id, L.fromCents(t.amount_cents)));
   }
+  if (act === "export") return respond(event, exportCard(userId));
   if (act === "settings") return respond(event, settingsCard(userId));
   if (act === "weekly") {
     const on = L.getPref(userId, "weekly") === "on";
@@ -460,7 +490,8 @@ async function handleText(event) {
         { label: "หมวดที่จำไว้", value: `${c.hints}` },
         { label: "ให้ความยินยอม", value: u.consent_at.slice(0, 10) },
       ],
-      actions: [{ label: "⚙️ ตั้งค่า", data: "act=settings" },
+      actions: [{ label: "📤 ส่งออก CSV", data: "act=export" },
+                { label: "⚙️ ตั้งค่า", data: "act=settings" },
                 { label: "🗑 ลบข้อมูลทั้งหมด", text: "ลบข้อมูลของฉัน" }],
     }));
   }
@@ -596,6 +627,10 @@ async function handleText(event) {
     }));
   }
 
+  if (/^(ส่งออก|export|csv)$/i.test(text)) {
+    if (!L.hasConsent(userId)) return respond(event, consentCard());
+    return respond(event, exportCard(userId));
+  }
   if (/^(ตั้งค่า|settings)$/i.test(text)) {
     if (!L.hasConsent(userId)) return respond(event, consentCard());
     return respond(event, settingsCard(userId));

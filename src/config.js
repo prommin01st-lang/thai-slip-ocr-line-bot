@@ -16,6 +16,10 @@ export const config = {
 
   port: Number(process.env.PORT || 3000),
 
+  // URL สาธารณะของบอท (ngrok / โดเมนจริง) — ใช้ทำลิงก์ดาวน์โหลด CSV
+  // ไม่ตั้ง = ปิดฟีเจอร์ส่งออก (บอกผู้ใช้ตรง ๆ ดีกว่าส่งลิงก์เสีย)
+  publicUrl: (process.env.PUBLIC_URL || "").replace(/\/$/, ""),
+
   // slip-ocr-th/serve.py (GPU, :8100) หรือ serve_paddle.py (CPU, :8101)
   ocrEndpoint: (process.env.OCR_ENDPOINT || "http://localhost:8100").replace(/\/$/, ""),
   // ต้องตรงกับ SLIP_OCR_TOKEN ฝั่ง backend; ว่าง = backend เปิดโล่ง (โหมด dev บน localhost)

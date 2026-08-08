@@ -90,7 +90,23 @@ npm install
 node scripts/richmenu.mjs create
 ```
 
-## 7. สรุปรายสัปดาห์ (ตัวเลือก)
+## 7. ส่งออก CSV — ต้องตั้ง `PUBLIC_URL`
+
+LINE **ส่งไฟล์ให้ผู้ใช้ไม่ได้** (Messaging API ไม่มี message type สำหรับไฟล์)
+ปุ่ม "ส่งออก CSV" จึงให้ลิงก์ที่บอทเสิร์ฟเอง → ต้องรู้ URL สาธารณะของตัวเอง
+
+```bash
+echo "PUBLIC_URL=https://bot.example.com" >> .env
+docker compose restart bot
+```
+
+ลิงก์คุมไว้ 3 ชั้น: token สุ่ม 32 ไบต์ · หมดอายุ 15 นาที (`EXPORT_TTL_MIN`) · **ใช้ได้ครั้งเดียว**
+และหายทันทีเมื่อผู้ใช้กด "ลบข้อมูลของฉัน"
+
+> ⚠️ ถ้าใช้ **ngrok free** ลิงก์จะติดหน้าเตือนของ ngrok ก่อน (ผู้ใช้ต้องกด "Visit Site")
+> ใช้โดเมนจริงกับ Caddy จะไม่มีปัญหานี้
+
+## 8. สรุปรายสัปดาห์ (ตัวเลือก)
 
 ```bash
 crontab -e

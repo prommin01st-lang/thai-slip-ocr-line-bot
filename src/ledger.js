@@ -1,7 +1,7 @@
 // ledger.js — ตรรกะสมุดบัญชี: ยินยอม → กันซ้ำ → ตัดสินทิศทาง → บันทึก → สรุป
 //
 // แยกจาก db.js (schema/connection) เพื่อให้เทสได้โดยใช้ DB ในหน่วยความจำ
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { open, toCents, fromCents, nowIso } from "./db.js";
 
 let _db = null;
@@ -484,6 +484,75 @@ export function usersWithPref(key, value = "on") {
     SELECT u.line_user_id FROM users u
     JOIN prefs p ON p.line_user_id = u.line_user_id AND p.key = ? AND p.value = ?
     WHERE u.consent_at IS NOT NULL`).all(key, value).map((r) => r.line_user_id);
+}
+
+// ---------- ส่งออก CSV ----------
+
+const EXPORT_TTL_MIN = Number(process.env.EXPORT_TTL_MIN || 15);
+
+/** สร้างลิงก์ดาวน์โหลดชั่วคราว — คืน token (สุ่ม เดาไม่ได้) */
+export function createExportToken(userId) {
+  const token = randomBytes(32).toString("base64url");
+  const exp = new Date(Date.now() + EXPORT_TTL_MIN * 60_000).toISOString();
+  const d = db();
+  // เก็บบ้านไปด้วย: ลบ token ที่หมดอายุแล้วทิ้ง ไม่ให้สะสม
+  d.prepare("DELETE FROM export_tokens WHERE expires_at < ?").run(new Date().toISOString());
+  d.prepare(`INSERT INTO export_tokens (token, line_user_id, expires_at, created_at)
+             VALUES (?, ?, ?, ?)`).run(token, userId, exp, nowIso());
+  return { token, expiresAt: exp, ttlMin: EXPORT_TTL_MIN };
+}
+
+/**
+ * ตรวจ token → คืน userId ถ้าใช้ได้ ไม่งั้น null
+ *
+ * ใช้ได้ครั้งเดียว: ประทับ `used_at` แล้วครั้งต่อไปปฏิเสธ
+ * (ลิงก์ที่มีข้อมูลการเงินไม่ควรเปิดซ้ำได้เรื่อย ๆ เผื่อหลุดไปอยู่ในประวัติเบราว์เซอร์)
+ */
+export function consumeExportToken(token) {
+  if (!token) return null;
+  const d = db();
+  const row = d.prepare("SELECT * FROM export_tokens WHERE token = ?").get(token);
+  if (!row || row.used_at || row.expires_at < new Date().toISOString()) return null;
+  d.prepare("UPDATE export_tokens SET used_at = ? WHERE token = ?").run(nowIso(), token);
+  return row.line_user_id;
+}
+
+const CSV_COLS = [
+  ["id", (t) => t.id],
+  ["วันที่", (t) => t.occurred_at ?? ""],
+  ["ประเภท", (t) => ({ in: "รายรับ", out: "รายจ่าย", unknown: "ยังไม่ระบุ" }[t.direction])],
+  ["จำนวน", (t) => fromCents(t.amount_cents).replace(/,/g, "")],   // ไม่ใส่คอมมา — Sheets จะได้อ่านเป็นตัวเลข
+  ["สกุลเงิน", (t) => t.currency],
+  ["หมวดหมู่", (t) => t.category ?? ""],
+  ["คู่ค้า", (t) => t.counterparty ?? ""],
+  ["รายละเอียด", (t) => t.note ?? ""],
+  ["ที่มา", (t) => ({ slip: "สลิป", chat: "พิมพ์เอง", manual: "กรอกเอง" }[t.source] ?? t.source)],
+  ["สถานะ", (t) => ({ confirmed: "ยืนยันแล้ว", pending: "รอตรวจ" }[t.status] ?? t.status)],
+  ["เลขอ้างอิง", (t) => t.ref ?? ""],
+  ["ธนาคาร", (t) => t.bank ?? ""],
+];
+
+const csvCell = (v) => {
+  const s = String(v ?? "");
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+/**
+ * ธุรกรรมทั้งหมดของผู้ใช้ → สตริง CSV
+ *
+ * ขึ้นต้นด้วย BOM (﻿) — **จำเป็น** ไม่งั้น Excel เปิดแล้วภาษาไทยเป็นตัวยึกยือ
+ * (Google Sheets อ่านได้อยู่แล้ว แต่ Excel เดา encoding เป็น cp874/1252)
+ */
+export function exportCsv(userId) {
+  const rows = db().prepare(`
+    SELECT t.*, s.ref, s.bank
+    FROM txns t LEFT JOIN slips s ON s.txn_id = t.id
+    WHERE t.line_user_id = ? AND t.status != 'rejected'
+    ORDER BY COALESCE(t.occurred_at, t.created_at), t.id`).all(userId);
+
+  const lines = [CSV_COLS.map(([h]) => csvCell(h)).join(",")];
+  for (const t of rows) lines.push(CSV_COLS.map(([, f]) => csvCell(f(t))).join(","));
+  return { csv: "﻿" + lines.join("\r\n") + "\r\n", count: rows.length };
 }
 
 // ---------- โควตา push (300/เดือน — ต้องนับเอง) ----------

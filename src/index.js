@@ -6,6 +6,7 @@ import express from "express";
 import { middleware } from "@line/bot-sdk";
 import { config } from "./config.js";
 import { handleEvent } from "./handlers.js";
+import * as L from "./ledger.js";
 import * as ocr from "./ocrClient.js";
 import { ahead } from "./queue.js";
 
@@ -14,6 +15,30 @@ const app = express();
 // health ของตัว bot เอง (ไม่ใช่ของ OCR) — ใช้เช็คว่า tunnel ต่อถึงไหม
 app.get("/health", async (_req, res) => {
   res.json({ status: "ok", queue: ahead(), ocr: await ocr.health() });
+});
+
+/**
+ * ดาวน์โหลด CSV — LINE ส่งไฟล์ให้ผู้ใช้ไม่ได้ ต้องให้ลิงก์มาโหลดเอง
+ *
+ * ลิงก์มีข้อมูลการเงินจริง จึงคุมไว้ 3 ชั้น:
+ *   token สุ่ม 32 ไบต์ (เดาไม่ได้) · หมดอายุใน 15 นาที · ใช้ได้ครั้งเดียว
+ * ตอบ 404 เหมือนกันหมดไม่ว่า token ผิด/หมดอายุ/ใช้ไปแล้ว — ไม่บอกใบ้ว่าอันไหนมีอยู่จริง
+ */
+app.get("/export/:token", (req, res) => {
+  const userId = L.consumeExportToken(req.params.token);
+  if (!userId) return res.status(404).type("text/plain; charset=utf-8").send("ลิงก์นี้หมดอายุหรือถูกใช้ไปแล้ว");
+
+  const { csv, count } = L.exportCsv(userId);
+  const name = `slipingman-${new Date().toISOString().slice(0, 10)}.csv`;
+  res.set({
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${name}"`,
+    // ห้าม cache — ไฟล์มี PII และลิงก์ใช้ได้ครั้งเดียวอยู่แล้ว
+    "Cache-Control": "no-store, must-revalidate",
+    "X-Content-Type-Options": "nosniff",
+  });
+  console.log(`[export] ส่ง CSV ${count} แถว`);
+  res.send(csv);
 });
 
 // middleware ของ SDK ตรวจ X-Line-Signature (HMAC-SHA256 ด้วย channel secret) และ parse body ให้

@@ -226,6 +226,7 @@ function kvRow(r, tone) {
 
 /**
  * ปุ่มในการ์ด — รองรับ 3 แบบ
+ *   {url}           เปิดลิงก์ (ใช้กับดาวน์โหลด CSV — LINE ส่งไฟล์เองไม่ได้)
  *   {data}          postback ธรรมดา (ทำงานทันที)
  *   {text}          ส่งข้อความแทนผู้ใช้
  *   {fill}          เปิดแป้นพิมพ์พร้อม**เติมข้อความไว้ให้** → ผู้ใช้พิมพ์ต่อแค่ตัวเลข
@@ -233,7 +234,9 @@ function kvRow(r, tone) {
  */
 function button(a, tone) {
   let action;
-  if (a.fill !== undefined) {
+  if (a.url) {
+    action = { type: "uri", label: a.label, uri: a.url };
+  } else if (a.fill !== undefined) {
     action = { type: "postback", label: a.label, data: a.data ?? "act=noop",
                inputOption: "openKeyboard", fillInText: a.fill };
   } else if (a.data) {
