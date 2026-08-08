@@ -15,6 +15,7 @@ import { enqueue, ahead } from "./queue.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          summaryBubble, txnListBubble } from "./flex.js";
 import { parseEntry } from "./nlu.js";
+import { nowLocal } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
 
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: config.channelAccessToken });
@@ -303,7 +304,8 @@ async function handleImage(event) {
 
 // ---------- สรุป ----------
 
-function summaryMessage(userId, range = "month") {
+// export เพื่อให้เทสเรียกตรงได้ — การ์ด "ไม่มีรายการ" เคยกลืนยอดที่อยู่นอกช่วงมาแล้ว
+export function summaryMessage(userId, range = "month") {
   let from, to, title;
   if (range === "week") {
     [from, to] = thisWeek(); title = "สรุปสัปดาห์นี้";
@@ -322,6 +324,26 @@ function summaryMessage(userId, range = "month") {
   }
   const s = { ...L.summary(userId, from, to), title };
   if (!s.income_n && !s.expense_n && !s.unknown_n) {
+    // ⚠️ ต้องบอกด้วยว่ามีรายการอยู่ "นอกช่วง" ไหม
+    // เดิมการ์ดนี้ทิ้ง outside_n ไปเฉย ๆ ผู้ใช้จึงเห็นแค่ "ยังไม่มีข้อมูล"
+    // ทั้งที่เพิ่งบันทึกยอดไปเมื่อครู่ → ดูเหมือนเงินหาย (ผู้ใช้แจ้งมาจริง)
+    if (s.outside_n) {
+      return card({
+        title: "ช่วงนี้ยังไม่มีรายการ", emoji: "📊", tone: "warn",
+        text: `ช่วง ${from} – ${to} ไม่มีข้อมูล\nแต่ยอดของคุณไม่ได้หายไปไหนครับ`,
+        rows: [
+          { label: "มีอยู่นอกช่วงนี้", value: `${s.outside_n} รายการ` },
+          ...(s.outside_oldest
+            ? [{ label: "ช่วงที่มีข้อมูล", value: `${s.outside_oldest} – ${s.outside_newest}` }]
+            : []),
+        ],
+        notes: ["สลิปจะลงวันที่ตามที่พิมพ์บนใบ ซึ่งอาจเป็นเดือนก่อน"],
+        actions: [
+          { label: "📚 ดูสรุปทั้งหมด", data: "act=sum&r=all", primary: true },
+          { label: "🧾 ดูรายการล่าสุด", data: "act=list" },
+        ],
+      });
+    }
     return card({
       title: "ยังไม่มีรายการ", emoji: "📊", tone: "info",
       text: `ช่วง ${from} – ${to} ยังไม่มีข้อมูลครับ`,
@@ -419,7 +441,7 @@ async function handlePostback(event) {
     if (!t) return respond(event, notFoundCard(id));
     let at;
     if (v === "now") {
-      at = new Date().toISOString().slice(0, 16).replace("T", " ");
+      at = nowLocal();                    // เวลาไทย ไม่ใช่ UTC — ดู nowLocal() ใน db.js
     } else {
       at = L.slipOccurredAt(userId, id) ?? t.occurred_at;   // ย้อนกลับไปวันที่บนสลิป
     }

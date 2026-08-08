@@ -446,7 +446,13 @@ export function summaryBubble(s, fromCents) {
                (s.outside_oldest ? ` (${s.outside_oldest} – ${s.outside_newest})` : "") +
                ` — กดปุ่มล่างดูทั้งหมด`);
   }
-  if (s.unknown_n) notes.push(`⚠️ ${s.unknown_n} รายการยังไม่รู้ว่ารับหรือจ่าย`);
+  // ต้องบอกยอดด้วย ไม่ใช่แค่จำนวน — ยอดพวกนี้ไม่ถูกรวมใน รับ/จ่าย/คงเหลือ
+  // ถ้าบอกแค่ "1 รายการ" ผู้ใช้จะเห็นการ์ดขึ้น 0.00 ทั้งที่เพิ่งบันทึกเงินไป
+  if (s.unknown_n) {
+    notes.push(`⚠️ ${s.unknown_n} รายการยังไม่รู้ว่ารับหรือจ่าย` +
+               (s.unknown_cents ? ` รวม ${fromCents(s.unknown_cents)} ฿ (ยังไม่นับในยอดข้างบน)` : "") +
+               ` — กด “รายการล่าสุด” เพื่อระบุ`);
+  }
   if (s.pending_n) notes.push(`📝 ${s.pending_n} รายการรอตรวจยอด`);
   if (notes.length) {
     body.push({

@@ -162,3 +162,19 @@ export function fromCents(c) {
 }
 
 export const nowIso = () => new Date().toISOString();
+
+/** เขตเวลาที่ใช้ตัดสินว่า "วันนี้" คือวันไหน — ต้องตรงกับ notify.js */
+export const TZ = "Asia/Bangkok";
+
+/**
+ * เวลาปัจจุบันแบบเวลาไทย `'YYYY-MM-DD HH:MM'` — รูปแบบเดียวกับ `txns.occurred_at`
+ *
+ * ⚠️ **ห้ามใช้ `toISOString()` ทำหน้าที่นี้** มันคืน UTC ซึ่งช้ากว่าไทย 7 ชม.
+ * รายการที่พิมพ์ตอน 00:00–07:00 จะถูกลงเป็น "เมื่อวาน" และถ้าเป็นวันที่ 1 ของเดือน
+ * ก็หลุดไปอยู่เดือนก่อน → หายจาก "สรุปเดือนนี้" ทั้งที่เพิ่งบันทึกไป
+ * (`thisMonth()` / `thisWeek()` ใน notify.js ยึดเวลาไทย ทั้งสองฝั่งต้องใช้โซนเดียวกัน)
+ *
+ * `sv-SE` เพราะให้รูปแบบ `YYYY-MM-DD HH:MM:SS` มาตรงเลย ไม่ต้องประกอบเอง
+ */
+export const nowLocal = (tz = TZ) =>
+  new Date().toLocaleString("sv-SE", { timeZone: tz }).slice(0, 16);

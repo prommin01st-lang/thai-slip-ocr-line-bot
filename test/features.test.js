@@ -1,10 +1,11 @@
 // features.test.js — ฟีเจอร์ที่เพิ่มรอบนี้: แก้/ลบรายการ · ทิศทางจาก quick reply · งบ · แจ้งเตือน
 import assert from "node:assert/strict";
-import { open, toCents, fromCents } from "../src/db.js";
+import { open, toCents, fromCents, nowLocal } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as N from "../src/notify.js";
 import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thaiMonth }
   from "../src/flex.js";
+import { summaryMessage } from "../src/handlers.js";
 
 L.setDb(open(":memory:"));
 const U = "Ufeat000000000000000000000000001";
@@ -222,5 +223,59 @@ const tk2 = L.createExportToken(E);
 L.deleteAllData(E);
 assert.equal(L.consumeExportToken(tk2.token), null, "ลบข้อมูลแล้ว token เดิมต้องใช้ไม่ได้");
 ok("ลบข้อมูลผู้ใช้ → ลิงก์ส่งออกที่ค้างอยู่ใช้ไม่ได้ทันที");
+
+// --- ยอดต้องไม่หายจากสรุป (ผู้ใช้แจ้งจริง: บอทตอบว่าบันทึกแล้ว แต่กดสรุปไม่เจอ) ---
+//
+// 3 ทางที่เงินเคยหายไปเงียบ ๆ:
+//   ก. สลิปอ่านวันที่ไม่ออก → occurred_at = NULL → สรุปกรอง IS NOT NULL ทิ้ง
+//   ข. สลิปลงวันที่เดือนก่อน → อยู่นอกช่วง แต่การ์ด "ไม่มีรายการ" ไม่ยอมบอก
+//   ค. บันทึกช่วงตี 1 → occurred_at เป็น UTC = เมื่อวาน → หลุดออกนอกเดือน
+const Z = "Uzero000000000000000000000000001";
+L.ensureUser(Z, "Z"); L.grantConsent(Z);
+const todayTh = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+const monthTh = [`${todayTh.slice(0, 7)}-01`, todayTh];
+
+// ก. สลิปไม่มีวันที่บนใบ
+const noDate = L.recordSlip(Z, slip({ date: null, time: null }), { imageSha256: "z-nodate" });
+assert.equal(noDate.ok, true, "ต้องบันทึกได้แม้อ่านวันที่ไม่ออก");
+assert.equal(L.getTxn(Z, noDate.txnId).occurred_at, null, "ตั้งใจให้ occurred_at เป็น NULL");
+
+const sNo = L.summary(Z, ...monthTh);
+assert.equal(sNo.expense_n + sNo.income_n + sNo.unknown_n, 1,
+  "สลิปที่ไม่มีวันที่ต้องถูกนับในเดือนที่บันทึก ไม่ใช่หายไปเฉย ๆ");
+assert.deepEqual(L.fullRange(Z), [todayTh, todayTh], "สรุปทั้งหมดต้องมองเห็นด้วย");
+ok("สลิปที่อ่านวันที่ไม่ออกยังโผล่ในสรุป (ถอยไปใช้วันที่บันทึก)");
+
+// ข. รายการนอกช่วง → การ์ดต้องบอก ไม่ใช่ตอบว่า "ยังไม่มีข้อมูล" เฉย ๆ
+const Y = "Uout0000000000000000000000000001";
+L.ensureUser(Y, "Y"); L.grantConsent(Y);
+L.recordSlip(Y, slip({ date: "2026-05-29", time: "15:00" }), { imageSha256: "y-old" });
+const sOut = L.summary(Y, ...monthTh);
+assert.equal(sOut.expense_n + sOut.income_n + sOut.unknown_n, 0, "เดือนนี้ต้องว่างจริง");
+assert.equal(sOut.outside_n, 1, "ต้องนับรายการนอกช่วงได้");
+
+const cardOut = summaryMessage(Y, "month");
+const flat = JSON.stringify(cardOut);
+assert.ok(!/ยังไม่มีข้อมูลครับ/.test(flat) || /นอกช่วง/.test(flat),
+  "ห้ามตอบแค่ 'ยังไม่มีข้อมูล' ทั้งที่มียอดอยู่นอกช่วง");
+assert.ok(/นอกช่วงนี้/.test(flat), "ต้องบอกจำนวนรายการที่อยู่นอกช่วง");
+assert.ok(/2026-05-29/.test(flat), "ต้องบอกช่วงวันที่ที่มีข้อมูลจริง");
+assert.ok(/act=sum&r=all/.test(flat), "ต้องมีปุ่มไปสรุปทั้งหมด (ไม่ต้องให้ผู้ใช้พิมพ์เอง)");
+ok("เดือนนี้ว่างแต่มียอดนอกช่วง → การ์ดบอก + มีปุ่มดูสรุปทั้งหมด");
+
+// ปุ่มนั้นต้องพาไปเจอยอดจริง
+// สลิปนี้ทิศทางเป็น 'unknown' (ยังไม่ได้ผูกบัญชี) — ยอดจึงไม่เข้า รับ/จ่าย
+// แต่ **ต้องเห็นยอดที่ไหนสักแห่ง** ไม่ใช่การ์ดขึ้น 0.00 ทั้งใบเหมือนเงินหาย
+assert.equal(L.summary(Y, ...L.fullRange(Y)).unknown_cents, 88800, "ต้องคิดยอดของ unknown ด้วย");
+const cardAll = JSON.stringify(summaryMessage(Y, "all"));
+assert.ok(/888\.00/.test(cardAll), "กดสรุปทั้งหมดแล้วต้องเห็นยอด 888.00 ที่ไหนสักแห่ง");
+ok("ปุ่ม “ดูสรุปทั้งหมด” พาไปเจอยอดที่หาไม่เจอจริง (รวมยอด unknown)");
+
+// ค. เวลาที่ใช้บันทึกต้องเป็นเวลาไทย ไม่ใช่ UTC
+assert.equal(nowLocal().slice(0, 10), todayTh,
+  "nowLocal() ต้องให้วันที่ตามเวลาไทย — ถ้าใช้ UTC ช่วงตี 1–7 จะลงเป็นเมื่อวาน");
+assert.notEqual(nowLocal(), new Date().toISOString().slice(0, 16).replace("T", " "),
+  "ต้องต่างจาก UTC จริง ๆ (ไทย +7)");
+ok("บันทึกจากแชทใช้เวลาไทย ไม่ใช่ UTC");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

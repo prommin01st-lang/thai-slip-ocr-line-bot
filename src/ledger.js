@@ -2,7 +2,20 @@
 //
 // แยกจาก db.js (schema/connection) เพื่อให้เทสได้โดยใช้ DB ในหน่วยความจำ
 import { createHash, randomBytes } from "node:crypto";
-import { open, toCents, fromCents, nowIso } from "./db.js";
+import { open, toCents, fromCents, nowIso, nowLocal } from "./db.js";
+
+/**
+ * วันที่ที่ใช้จัดกลุ่มรายการในสรุป (นิพจน์ SQL)
+ *
+ * `occurred_at` เป็น NULL ได้ — สลิปที่ OCR อ่านวันที่ไม่ออกจะไม่มีวันที่เลย
+ * เดิมสรุปกรอง `occurred_at IS NOT NULL` ทิ้ง ทำให้เงินก้อนนั้น**หายจากทุกสรุป
+ * รวมทั้ง "สรุปทั้งหมด"** ทั้งที่บอทตอบว่าบันทึกสำเร็จ (ผู้ใช้เจอจริงแล้ว)
+ *
+ * จึงถอยไปใช้วันที่ที่บันทึก — บันทึกวันไหนก็ลงวันนั้น ดีกว่าหายไปเฉย ๆ
+ * `created_at` เก็บเป็น UTC จึงต้อง +7 ชม. ให้เป็นวันตามเวลาไทย
+ * (`recentTxns` ใช้หลักเดียวกันอยู่แล้ว — ตรงนั้นถึงยังเห็นรายการที่สรุปมองไม่เห็น)
+ */
+const DATE_OF = "COALESCE(date(occurred_at), date(created_at, '+7 hours'))";
 
 let _db = null;
 export function db() {
@@ -215,7 +228,7 @@ export function recordEntry(userId, entry, { occurredAt: at = null } = {}) {
   if (!entry || entry.amountCents == null) return { ok: false, reason: "no_amount" };
 
   const d = db();
-  const when = at ?? new Date().toISOString().slice(0, 16).replace("T", " ");
+  const when = at ?? nowLocal();          // เวลาไทย ไม่ใช่ UTC — ดู nowLocal() ใน db.js
   const info = d.prepare(`
     INSERT INTO txns (line_user_id, direction, amount_cents, currency, occurred_at,
                       counterparty, category, note, source, confidence, status, created_at)
@@ -261,7 +274,7 @@ export function summary(userId, from, to) {
     SELECT direction, SUM(amount_cents) AS cents, COUNT(*) AS n
     FROM txns
     WHERE line_user_id = ? AND status != 'rejected'
-      AND occurred_at IS NOT NULL AND date(occurred_at) BETWEEN ? AND ?
+      AND ${DATE_OF} BETWEEN ? AND ?
     GROUP BY direction`).all(userId, from, to);
 
   const get = (dir) => rows.find((r) => r.direction === dir) ?? { cents: 0, n: 0 };
@@ -271,22 +284,24 @@ export function summary(userId, from, to) {
     SELECT COALESCE(category, 'ไม่ระบุ') AS category, SUM(amount_cents) AS cents, COUNT(*) AS n
     FROM txns
     WHERE line_user_id = ? AND direction = 'out' AND status != 'rejected'
-      AND occurred_at IS NOT NULL AND date(occurred_at) BETWEEN ? AND ?
+      AND ${DATE_OF} BETWEEN ? AND ?
     GROUP BY 1 ORDER BY cents DESC LIMIT 3`).all(userId, from, to);
 
   // รายการที่อยู่ "นอกช่วง" — สลิปมักลงวันที่ตามที่พิมพ์บนใบ ซึ่งอาจเป็นเดือนก่อน
   // ถ้าไม่บอก ผู้ใช้จะเห็นเหมือนยอดหายไป (เจอมาแล้วตอนใช้จริง)
   const outside = d.prepare(`
-    SELECT COUNT(*) n, MIN(date(occurred_at)) oldest, MAX(date(occurred_at)) newest
+    SELECT COUNT(*) n, MIN(${DATE_OF}) oldest, MAX(${DATE_OF}) newest
     FROM txns
     WHERE line_user_id = ? AND status != 'rejected'
-      AND (occurred_at IS NULL OR date(occurred_at) NOT BETWEEN ? AND ?)`).get(userId, from, to);
+      AND ${DATE_OF} NOT BETWEEN ? AND ?`).get(userId, from, to);
 
   return {
     from, to,
     income_cents: income.cents ?? 0, income_n: income.n,
     expense_cents: expense.cents ?? 0, expense_n: expense.n,
-    unknown_n: unknown.n,
+    // ยอดของรายการที่ยังไม่รู้ว่ารับหรือจ่าย — เดิมนับแต่จำนวน ไม่คิดยอด
+    // ทำให้สลิปที่ผู้ใช้กด "ข้ามไปก่อน" ขึ้นเป็น รับ 0.00 / จ่าย 0.00 เหมือนเงินหาย
+    unknown_n: unknown.n, unknown_cents: unknown.cents ?? 0,
     net_cents: (income.cents ?? 0) - (expense.cents ?? 0),
     top_categories: topCats.map((c) => ({ ...c, amount: fromCents(c.cents) })),
     pending_n: d.prepare(`SELECT COUNT(*) n FROM txns
@@ -300,8 +315,8 @@ export function summary(userId, from, to) {
 /** ช่วงวันที่ที่มีข้อมูลทั้งหมดของผู้ใช้ — ใช้ทำ "สรุปทั้งหมด" */
 export function fullRange(userId) {
   const r = db().prepare(`
-    SELECT MIN(date(occurred_at)) a, MAX(date(occurred_at)) b FROM txns
-    WHERE line_user_id = ? AND status != 'rejected' AND occurred_at IS NOT NULL`).get(userId);
+    SELECT MIN(${DATE_OF}) a, MAX(${DATE_OF}) b FROM txns
+    WHERE line_user_id = ? AND status != 'rejected'`).get(userId);
   return r?.a ? [r.a, r.b] : null;
 }
 
