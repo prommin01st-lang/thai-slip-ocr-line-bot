@@ -1,7 +1,7 @@
 {
-  "name": "slipingman-line-assistant",
+  "name": "thai-slip-ocr-line-bot",
   "version": "0.1.0",
-  "description": "LINE bot อ่านสลิปโอน/ใบเสร็จ/ใบเงินเดือนไทย → JSON โดยต่อกับ slip-ocr-th",
+  "description": "Read Thai bank slips, receipts and payslips from a photo inside LINE chat and keep an income/expense ledger. PaddleOCR on CPU — no GPU, no LLM.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -15,11 +15,21 @@
     "weekly": "node --disable-warning=ExperimentalWarning scripts/weekly.mjs"
   },
   "keywords": [
-    "line",
-    "messaging-api",
-    "ocr",
     "thai",
-    "slip"
+    "ocr",
+    "slip",
+    "bank-slip",
+    "receipt-ocr",
+    "payslip",
+    "line-bot",
+    "line-messaging-api",
+    "paddleocr",
+    "expense-tracker",
+    "thai-ocr",
+    "self-hosted",
+    "docker",
+    "nodejs",
+    "sqlite"
   ],
   "license": "MIT",
   "engines": {
@@ -29,5 +39,9 @@
     "@line/bot-sdk": "^11.2.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_USER/thai-slip-ocr-line-bot.git"
   }
 }

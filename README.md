@@ -1,102 +1,176 @@
-# SlipingMan — LINE assistant อ่านสลิปไทย
+# Thai Slip OCR — LINE Bot & Expense Tracker
 
-ส่งรูป **สลิปโอนเงิน / ใบเสร็จ / ใบเงินเดือน** เข้า LINE → บอทตอบกลับเป็นการ์ดข้อมูลมีโครงสร้าง
+> Read Thai bank transfer slips, receipts and payslips from a photo, turn them into
+> structured data, and keep a personal income/expense ledger — all inside LINE chat.
+> **No GPU. No LLM. Runs on a 2-core VPS.**
 
-โปรเจกต์นี้เป็น **ฝั่งหน้าบ้าน (LINE)** เท่านั้น — งาน OCR จริงยิงไปที่
-[`../slip-ocr-th`](../slip-ocr-th) ซึ่งรัน `baidu/Unlimited-OCR` (3B VLM, 4-bit) บน RTX 2060 6GB
+🇹🇭 **[อ่านเป็นภาษาไทย → README.th.md](README.th.md)**
 
-```
-LINE app ──(รูป)──► LINE Platform
-                         │ webhook POST  (ต้องตอบ 200 แทบทันที ไม่งั้น LINE retry)
-                         ▼
-              ┌────────────────────────────┐
-              │ SlipingMan (Node/Express)   │  ← ไม่มี torch/ML dep ใด ๆ
-              │  1. ตรวจ X-Line-Signature   │
-              │  2. ตอบ 200 ทันที           │
-              │  3. โยนเข้าคิวเบื้องหลัง    │
-              └──────────┬─────────────────┘
-                         │ POST /parse {"image_b64": ...}
-                         ▼
-              slip-ocr-th/serve_paddle.py :8101 ──► JSON
-              (PaddleOCR/CPU ~2-6 วิ · ไม่กิน VRAM)
-                         │
-                         ▼
-              Flex Message ──► reply token (ถ้าหมดอายุ → push)
-```
+---
 
-## เริ่มใช้งาน
+## Why this exists
+
+Most Thai slip-OCR projects either wrap a paid cloud API or bolt on a large
+vision-language model. This one uses **PaddleOCR on CPU** plus hand-tuned Thai regex
+parsers — and on real Thai bank slips it is **both faster and more accurate** than the
+3B VLM it replaced.
+
+### Benchmarks (measured, not estimated)
+
+**332 real Thai bank slips** (K-Bank 255 · ttb 70 · TrueMoney 7), ground truth derived
+from filenames and verified by eye:
+
+| Metric | Result |
+|---|---|
+| Fields correct (`ref`, `date`, `time`) | **379 / 395 = 96%** |
+| Amount detected | **332 / 332 = 100%** |
+| Failed images | **0** |
+| Speed | ~2 s (8-core) · **~8.5 s (2-core VPS)** |
+| RAM | **235 MB** |
+| VRAM | **0** |
+
+**Same test set, two engines** — identical parser, identical ground truth:
+
+| Test set | Unlimited-OCR 3B (GPU) | **PaddleOCR (CPU)** |
+|---|---|---|
+| SROIE receipts — amount | 50% | **78%** |
+| SROIE receipts — date | 67% | **98%** |
+| `openthaigpt/thai-ocr-evaluation` | 17% | **58%** |
+
+A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
+[Full write-up with every number and dead end → `bench/FINDINGS.md`](bench/FINDINGS.md)
+
+---
+
+## Features
+
+**Slip reading**
+- Thai bank transfer slips, receipts, payslips — document type detected automatically
+- Extracts amount, date, time, reference number, sender/receiver, bank
+- Handles `.webp` (LINE sends it), embossed watermarks, QR codes, phone screenshots
+- Every result carries `confidence` + `warnings` — low confidence is **not** silently saved
+
+**Ledger**
+- Income/expense tracking with monthly, weekly and all-time summaries
+- **Three-layer duplicate protection**: file hash (checked *before* OCR) → reference
+  number → fuzzy match on amount + time
+- Money stored as **integer satang** — never floats
+- Budgets with over/near-limit alerts, recurring-bill detection, weekly digest
+- Type `กาแฟ 60` in chat to log an expense — rule-based, no model needed
+
+**Privacy (Thailand PDPA)**
+- Explicit consent required before anything is stored
+- Slip **images are never kept** — only a SHA-256 fingerprint for deduplication
+- Account numbers stored as last 4 digits only
+- `ลบข้อมูลของฉัน` (delete my data) truly wipes every table — with a test proving it
+
+---
+
+## Quick start
 
 ```bash
-npm install
-cp .env.example .env          # แล้วเติม LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN
-npm test                      # เทสคิว + ตัวสร้าง Flex (ไม่ต้องมี GPU/โมเดล)
-./dev.sh                      # รัน OCR backend + bot + Tailscale Funnel พร้อมกัน
+git clone https://github.com/<you>/thai-slip-ocr-line-bot.git
+cd thai-slip-ocr-line-bot
+cp .env.example .env          # add LINE_CHANNEL_SECRET + LINE_CHANNEL_ACCESS_TOKEN
+docker compose up -d --build
 ```
 
-`./dev.sh` จะพิมพ์ **Webhook URL** ออกมา — เอาไปวางใน
-[LINE Developers Console](https://developers.line.biz/console/) → Messaging API → Webhook URL
-แล้วกด **Verify** และเปิด **Use webhook**
+Point your LINE webhook at `https://your-domain/webhook`. That's it —
+[full deployment guide → `DEPLOY.md`](DEPLOY.md).
 
-> ปิด **Auto-reply messages** และ **Greeting messages** ใน LINE Official Account Manager ด้วย
-> ไม่งั้นบอทจะตอบซ้อนกับข้อความอัตโนมัติของ LINE
+Prefer running without Docker? `npm install && ./dev.sh`
 
-### ตัวเลือกของ `dev.sh`
+---
 
-| คำสั่ง | ผล |
+## Architecture
+
+```
+LINE ──HTTPS──► bot (Node 22 + Express)  ──internal──► ocr (Python + PaddleOCR)
+                     │                                      │
+                     │                                 PP-OCRv5 mobile
+                     └── SQLite (node:sqlite)           th recognition model
+```
+
+Two containers, split by runtime:
+
+| Service | Stack | RAM | Image |
+|---|---|---|---|
+| `bot` | Node 22, Express 5, `@line/bot-sdk` | 23 MB | 296 MB |
+| `ocr` | Python 3.12, PaddleOCR (CPU) | 235 MB | 2.27 GB |
+
+`ocr` publishes **no external port** — reachable only from `bot` over the compose
+network, optionally behind a shared token. Both containers run as non-root.
+
+**No LLM anywhere in the request path.** Parsing is regex, categorisation is a SQL
+lookup over the user's own history, chat input is rule-based.
+
+---
+
+## Supported documents
+
+| Type | Fields extracted |
 |---|---|
-| `./dev.sh` | OCR + bot + funnel (เปิดสู่อินเทอร์เน็ต) |
-| `./dev.sh --local` | ไม่เปิด funnel — เทสในเครื่องอย่างเดียว |
-| `./dev.sh --no-ocr` | ไม่สตาร์ท `serve.py` (สั่งรันเองไว้แล้ว) |
+| Bank transfer slip | amount, currency, date, time, reference, from, to, bank |
+| Receipt / tax invoice | total, date, currency |
+| Payslip (ใบเงินเดือน) | net pay, gross, deductions, tax, social security, employee id, pay period |
 
-Ctrl+C ครั้งเดียวปิดทุกอย่าง **รวมถึงปิด funnel ให้ด้วย** (ไม่ทิ้งพอร์ตเปิดค้างสู่สาธารณะ)
+Banks detected: **กสิกรไทย (K-Bank/K+)**, **ไทยพาณิชย์ (SCB)**, **กรุงเทพ (BBL)**,
+**กรุงไทย (KTB)**, **กรุงศรี (BAY)**, **ทีทีบี (ttb)**, **ออมสิน (GSB)**,
+**TrueMoney**, **PromptPay (พร้อมเพย์)**
 
-## คำสั่งที่บอทเข้าใจ
+Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 
-| ผู้ใช้ส่ง | บอททำ |
-|---|---|
-| รูปภาพ | OCR → ตอบการ์ดผลลัพธ์ (บอกลำดับคิวถ้ามีคนรอ) |
-| `สถานะ` | เช็คว่า OCR backend พร้อมไหม + VRAM + ความยาวคิว |
-| ข้อความอื่น | ข้อความช่วยเหลือ |
+---
 
-## ไฟล์
+## Project layout
 
-| ไฟล์ | หน้าที่ |
-|---|---|
-| `src/index.js` | Express + `middleware()` ตรวจลายเซ็น → **ตอบ 200 ก่อน** → ประมวลผลเบื้องหลัง |
-| `src/handlers.js` | ตรรกะต่อ event: ดึงรูป, แสดง loading, reply→push fallback |
-| `src/ocrClient.js` | เรียก `slip-ocr-th` (`/parse`, `/slip`, `/payslip`, `/receipt`, `/health`) |
-| `src/queue.js` | คิว FIFO รันทีละงาน (GPU มีตัวเดียว) + บอกลำดับผู้ใช้ได้ |
-| `src/flex.js` | JSON → Flex Message ภาษาไทย (แสดง `confidence` + `warnings`) |
-| `src/config.js` | โหลด/ตรวจ env, fail fast |
-| `test/` | เทสคิว + เทส Flex จาก **ผลจริงของ parser ฝั่ง Python** (`test/fixtures/`) |
-| `.mcp.json` | ตั้งค่า `line-bot-mcp-server` ให้ Claude Code (ดูข้างล่าง) |
+```
+src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
+ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
+bench/          Benchmark harnesses and the full measurement write-up
+test/           71 tests, no network or GPU required — `npm test`
+scripts/        Rich menu builder, weekly digest cron, OCR sync
+```
 
-## ข้อจำกัดที่ออกแบบเผื่อไว้แล้ว
+The parsers in `ocr/` are **plain Python stdlib** (`re`, `json`, `difflib`) — you can
+lift `slip_parser.py` into any project without installing anything.
 
-- **OCR ~16 วิ/ใบ และ GPU serialize** — LINE ต้องได้ 200 ใน ~1 วิ ไม่งั้นมันจะส่ง event ซ้ำ
-  → ตอบ 200 ก่อนเสมอ (วัดจริงได้ **3ms**) แล้วค่อยทำงาน
-- **reply token ใช้ได้ครั้งเดียวและหมดอายุเร็ว** — คิวยาวแล้ว token อาจตายก่อน OCR เสร็จ
-  → ลอง `replyMessage` ก่อน (ไม่กินโควตา) พังแล้วค่อย `pushMessage`
-- **`OCR_TIMEOUT_MS` ต้องมากกว่า `SLIP_OCR_MAX_SECONDS`** ของ `serve.py` (default 150 วิ)
-  ไม่งั้นฝั่งเราจะตัดสายก่อนที่ backend จะได้ตอบ 504 พร้อมสาเหตุ
-- **VRAM** — OCR ยึด ~2.2GB จาก 6GB ตลอดเวลาที่รัน **ปิด `dev.sh` ก่อนเทรนโมเดลอื่น**
-- **venv แยกเด็ดขาด** — `slip-ocr-th` pin `transformers==4.46.3` แต่บอทตัวนี้เป็น Node
-  ไม่มี Python dependency เลย จึงไม่มีทางชนกัน
+---
 
-## `line-bot-mcp-server` (เครื่องมือฝั่ง dev)
-
-`.mcp.json` ต่อ [`@line/line-bot-mcp-server`](https://github.com/line/line-bot-mcp-server) ไว้ให้
-Claude Code สั่งการ LINE OA ได้โดยตรง — **มันเป็น outbound-only (ส่งอย่างเดียว) รับ webhook ไม่ได้**
-จึงไม่ได้ใช้แทน Express server แต่ใช้ตอนพัฒนา:
-
-- `push_flex_message` — ยิงการ์ดทดสอบเข้า LINE ได้ทันที ไม่ต้องรอ OCR 16 วิ
-- `create_rich_menu` — สร้างเมนูล่างของบอท
-- `get_follower_ids` / `get_profile` — หา `userId` มาใส่ `LINE_DESTINATION_USER_ID`
-- `get_message_quota` — เช็คโควตา push ที่เหลือ
-
-`.mcp.json` อ่าน token จาก environment (ไม่ฝัง secret ลงไฟล์ที่ commit) — ตั้งก่อนเปิด Claude Code:
+## Testing
 
 ```bash
-export $(grep -v '^#' .env | xargs)
-claude
+npm test        # 71 tests: money precision, dedup, PDPA deletion, NLU, Flex validity
 ```
+
+Every Flex message is validated against LINE's real
+`/v2/bot/message/validate/reply` endpoint, so layout errors surface before users see them.
+
+---
+
+## Contributing / forking
+
+This is built to be forked. The parts most worth reusing on their own:
+
+- `ocr/slip_parser.py` — Thai transfer-slip parser, stdlib only, has a self-test
+- `ocr/payslip_parser.py` — Thai payslip parser with fuzzy label matching
+- `bench/eval_dataset.py` — harness for scoring OCR against your own slip folder
+- `src/flex.js` — reusable Thai Flex card system for LINE bots
+
+If you add a bank or fix a parser edge case, a PR with a sample (redacted) slip and a
+test case is very welcome.
+
+---
+
+## Credits & license
+
+OCR by [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (Apache-2.0).
+Benchmarked against [`baidu/Unlimited-OCR`](https://huggingface.co/baidu/Unlimited-OCR),
+[SROIE](https://huggingface.co/datasets/Voxel51/scanned_receipts) and
+[`openthaigpt/thai-ocr-evaluation`](https://huggingface.co/datasets/openthaigpt/thai-ocr-evaluation).
+
+MIT — see [LICENSE](LICENSE).
+
+<sub>Keywords: thai bank slip ocr · สลิปโอนเงิน · LINE bot · LINE Messaging API ·
+PaddleOCR · Thai OCR · receipt OCR · payslip parser · expense tracker · บันทึกรายรับรายจ่าย ·
+self-hosted · no GPU · Docker</sub>
