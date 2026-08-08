@@ -533,7 +533,16 @@ const DIR_ICON = { in: "💰", out: "💸", unknown: "❓" };
 /** รายการล่าสุดพร้อมปุ่มลบต่อแถว */
 export function txnListBubble(rows, fromCents) {
   if (!rows.length) {
-    return { type: "text", text: "ยังไม่มีรายการครับ — ส่งสลิปหรือพิมพ์ “กาแฟ 60” ได้เลย" };
+    return card({
+      title: "ยังไม่มีรายการ", emoji: "🧾", tone: "info",
+      text: "ส่งรูปสลิปเข้ามา หรือพิมพ์รายการเองก็ได้ครับ",
+      rows: [
+        { label: "จดรายจ่าย", value: "พิมพ์ “กาแฟ 60”" },
+        { label: "จดรายรับ", value: "พิมพ์ “ได้เงินเดือน 30000”" },
+      ],
+      actions: [{ label: "📊 ดูสรุป", data: "act=summary", primary: true }],
+      altText: "ยังไม่มีรายการ — ส่งสลิปหรือพิมพ์ “กาแฟ 60” ได้เลย",
+    });
   }
   const items = rows.map((t) => ({
     type: "box", layout: "vertical", margin: "md", spacing: "xs",
