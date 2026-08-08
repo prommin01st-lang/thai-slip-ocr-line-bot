@@ -14,14 +14,20 @@ services:
     environment:
       # ตั้ง SLIP_OCR_TOKEN ใน .env แล้วทั้งสอง service จะใช้ค่าเดียวกัน
       SLIP_OCR_TOKEN: ${OCR_TOKEN:-}
+      # container เห็น cpu_count ของ host เสมอ (ไม่ใช่ของ quota) → paddle จะสร้าง thread
+      # เกินจำเป็นแล้วแย่งกันเอง ตั้งให้เท่าจำนวน core ที่มีจริง
+      OMP_NUM_THREADS: ${OCR_THREADS:-2}
+      MKL_NUM_THREADS: ${OCR_THREADS:-2}
     # ไม่ publish พอร์ตออกนอกเครื่อง — ให้ bot เรียกผ่าน network ภายในเท่านั้น
     expose:
       - "8101"
-    # PaddleOCR ใช้ CPU หนักตอน OCR — จำกัดไว้ไม่ให้กินทั้งเครื่อง (VPS 2 cores)
     deploy:
       resources:
         limits:
-          cpus: "1.5"
+          # **ไม่จำกัด cpu** — วัดแล้วเวลา OCR แปรผกผันกับจำนวน core เกือบเป๊ะ
+          #   1.5 core = 10.1 วิ · 2 core = 8.5 วิ · 4 core = 4.2 วิ · 8 core = 2.2 วิ
+          # ตั้ง quota ต่ำกว่าที่เครื่องมี = ทำให้ช้าลงเปล่า ๆ ส่วน bot ใช้ CPU แค่ ~3ms
+          # ต่อ webhook ซึ่ง scheduler ของ Linux แบ่งให้ได้อยู่แล้วโดยไม่ต้องกันโควตาไว้
           memory: 1600M
 
   bot:

@@ -4,10 +4,12 @@
 # (เทียบ Unlimited-OCR 3B ที่ใช้ ~51 วิ + VRAM 2.24 GB และอ่านสลิปไทยพลาด)
 FROM python:3.12-slim
 
-# libgl / libglib = ของที่ opencv (dependency ของ paddleocr) ต้องใช้
-# ไม่มีแล้ว import cv2 จะพังด้วย "libGL.so.1: cannot open shared object file"
+# ของที่ต้องมี ไม่งั้น import พังตั้งแต่ต้น (เจอมาแล้วตอน build จริง):
+#   libgomp1      → paddlepaddle: "libgomp.so.1: cannot open shared object file"
+#   libgl1        → opencv (dependency ของ paddleocr): "libGL.so.1: ..."
+#   libglib2.0-0  → opencv เช่นกัน
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 curl \
+        libgomp1 libgl1 libglib2.0-0 curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
