@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { open, toCents, fromCents, nowLocal } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as N from "../src/notify.js";
-import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thaiMonth }
-  from "../src/flex.js";
+import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thaiMonth,
+         categoryButtons } from "../src/flex.js";
 import { summaryMessage } from "../src/handlers.js";
+import { guessCategory, isCategory, labelOf } from "../src/categories.js";
 
 L.setDb(open(":memory:"));
 const U = "Ufeat000000000000000000000000001";
@@ -277,5 +278,67 @@ assert.equal(nowLocal().slice(0, 10), todayTh,
 assert.notEqual(nowLocal(), new Date().toISOString().slice(0, 16).replace("T", " "),
   "ต้องต่างจาก UTC จริง ๆ (ไทย +7)");
 ok("บันทึกจากแชทใช้เวลาไทย ไม่ใช่ UTC");
+
+// --- หมวดหมู่: เดาเอง → ผู้ใช้แก้ → จำไว้ → งบรายหมวดทำงาน ---
+//
+// ก่อนหน้านี้ทั้งเส้นนี้เป็นท่อว่าง: learnCategory() ไม่มีใครเรียก category_hints
+// จึงว่างตลอด ทุก txn มี category = NULL งบรายหมวดที่ตั้งไว้ไม่มีวันเตือน
+const C = "Ucat0000000000000000000000000001";
+L.ensureUser(C, "C"); L.grantConsent(C);
+
+// 1) พจนานุกรมเดาถูก และเลือก "คำที่ยาวที่สุด" ไม่ใช่คำแรกที่เจอ
+assert.equal(guessCategory("กาแฟ"), "อาหาร");
+assert.equal(guessCategory("ค่าแท็กซี่ไปทำงาน"), "เดินทาง");
+assert.equal(guessCategory("ซื้อของ shopee"), "ช้อปปิ้ง");
+assert.equal(guessCategory("จ่ายค่าไฟ"), "บิล");
+assert.equal(guessCategory("ค่ายา"), "สุขภาพ");
+// คำสั้นซ้อนในคำยาวคนละความหมาย — จุดที่ "เอาคำแรกที่เจอ" จะพัง
+assert.equal(guessCategory("ค่าน้ำ"), "บิล", "‘ค่าน้ำ’ ต้องเป็นบิล ไม่ใช่อาหารเพราะมี ‘น้ำ’");
+assert.equal(guessCategory("เติมน้ำมัน"), "เดินทาง", "‘น้ำมัน’ ต้องชนะ ‘น้ำ’");
+assert.equal(guessCategory("น้ำเปล่า"), "อาหาร");
+assert.equal(guessCategory("โอนให้แม่"), null, "ไม่รู้จักต้องคืน null ไม่ใช่เดามั่ว");
+ok("พจนานุกรมเดาหมวดถูก + คำยาวชนะคำสั้นที่ซ้อนกัน");
+
+// 2) พิมพ์ในแชทแล้วได้หมวดติดมาเลย
+const e1 = L.recordEntry(C, { direction: "out", amountCents: 6000, note: "กาแฟ" });
+assert.equal(L.getTxn(C, e1.txnId).category, "อาหาร", "ต้องเดาหมวดให้ตั้งแต่ตอนบันทึก");
+ok("พิมพ์ “กาแฟ 60” → ได้หมวด 🍜 อาหาร อัตโนมัติ");
+
+// 3) ผู้ใช้กดแก้หมวด → ต้องจำไว้ ครั้งหน้าไม่ต้องกดอีก
+assert.equal(L.setCategory(C, e1.txnId, "บันเทิง"), true);
+assert.equal(L.getTxn(C, e1.txnId).category, "บันเทิง");
+const e2 = L.recordEntry(C, { direction: "out", amountCents: 7000, note: "กาแฟ" });
+assert.equal(L.getTxn(C, e2.txnId).category, "บันเทิง",
+  "ที่ผู้ใช้เลือกเองต้องชนะพจนานุกรม และต้องจำข้ามรายการ");
+ok("กดเลือกหมวดเอง → จำไว้ ครั้งหน้าจัดให้เองโดยไม่ต้องกด");
+
+// 4) พอมีหมวดแล้ว งบรายหมวด + สรุปต้องทำงานจริง (เดิมเป็นไปไม่ได้เลย)
+const sc = L.summary(C, ...monthTh);
+assert.ok(sc.top_categories.some((c) => c.category === "บันเทิง"),
+  "สรุป ‘ใช้มากสุด’ ต้องเห็นหมวดจริง ไม่ใช่ ‘ไม่ระบุ’");
+L.setBudget(C, 10000, "บันเทิง");                 // งบ 100 บาท แต่ใช้ไป 130
+const bs = L.budgetStatus(C, ...monthTh);
+const bEnt = bs.find((b) => b.category === "บันเทิง");
+assert.ok(bEnt, "งบรายหมวดต้องถูกตรวจ — เดิมไม่มีรายการไหนมี category เลยจึงไม่มีวันเจอ");
+assert.equal(bEnt.used_cents, 13000);
+assert.equal(bEnt.over, true, "ใช้ 130 จากงบ 100 → ต้องขึ้นว่าเกิน");
+ok(`งบรายหมวดเตือนได้จริงแล้ว (ใช้ ${fromCents(bEnt.used_cents)} / งบ ${fromCents(bEnt.limit_cents)})`);
+
+// งบต้องนับรายการที่ไม่มีวันที่ด้วย ไม่งั้นยอดในการ์ดงบจะไม่ตรงกับยอดในสรุป
+const noDateSpend = L.recordSlip(C, slip({ date: null, time: null }),
+  { imageSha256: "c-nodate", direction: "out" });
+L.setCategory(C, noDateSpend.txnId, "บันเทิง");
+assert.equal(L.budgetStatus(C, ...monthTh).find((b) => b.category === "บันเทิง").used_cents,
+  13000 + 88800, "รายการที่อ่านวันที่ไม่ออกต้องถูกนับเข้างบด้วย");
+ok("งบนับรายการที่ไม่มีวันที่ด้วย — ยอดงบตรงกับยอดสรุป");
+
+// 5) ปุ่มเลือกหมวดต้องไม่โชว์หมวดที่เป็นอยู่แล้ว และ postback ต้องปลอมไม่ได้
+const btns = JSON.stringify(categoryButtons(e1.txnId, "อาหาร"));
+assert.ok(!/act=cat[^"]*c=%E0%B8%AD%E0%B8%B2%E0%B8%AB%E0%B8%B2%E0%B8%A3(&|")/.test(btns),
+  "ไม่ควรมีปุ่มหมวดที่เป็นอยู่แล้ว");
+assert.ok(/act=catpick/.test(btns), "ต้องมีปุ่ม ‘หมวดอื่น’ ไปเลือกที่เหลือ");
+assert.equal(isCategory("อาหาร"), true);
+assert.equal(isCategory("หมวดปลอม"), false, "ต้องปฏิเสธหมวดที่ไม่รู้จัก (postback ปลอมได้)");
+ok("ปุ่มเลือกหมวดถูกต้อง + กันหมวดปลอมจาก postback");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

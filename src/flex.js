@@ -2,6 +2,7 @@
 //
 // parser ทุกตัวคืน confidence: high|medium|low + warnings[] มาด้วย — เอามาแสดงตรง ๆ
 // ดีกว่าโชว์ตัวเลขเฉย ๆ เพราะ OCR ไทยยังเพี้ยนได้ ผู้ใช้ควรเห็นว่าค่าไหน "เดา"
+import { CATEGORIES, pickerFor, labelOf } from "./categories.js";
 
 const CONF = {
   high: { label: "แม่นยำสูง", color: "#2E7D5B", bg: "#E3F3EB" },
@@ -309,7 +310,11 @@ export function card({
   if (actions.length) {
     bubble.footer = {
       type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
-      contents: actions.map((a) => button(a, t)),
+      // สมาชิกที่เป็นอาเรย์ = ปุ่มเรียงแนวนอนแถวเดียวกัน
+      // ใช้กับตัวเลือกสั้น ๆ ที่มีหลายอัน (เช่น หมวดหมู่) ไม่งั้นการ์ดยาวจนต้องเลื่อนหา
+      contents: actions.map((a) => (Array.isArray(a)
+        ? { type: "box", layout: "horizontal", spacing: "sm", contents: a.map((x) => button(x, t)) }
+        : button(a, t))),
     };
   }
 
@@ -350,6 +355,25 @@ export function askDirection(txnId, amount) {
     ],
     altText: `รายการ ${amount ?? ""} เป็นรับหรือจ่าย?`,
   });
+}
+
+/**
+ * ปุ่มเลือกหมวด — 2 คอลัมน์ + ปุ่ม "หมวดอื่น" ถ้ายังมีที่ไม่ได้โชว์
+ *
+ * โชว์แค่ 4 ตัวเพราะ footer ของ Flex สูงเกินไปแล้วผู้ใช้ต้องเลื่อนหา
+ * ที่เหลือซ่อนหลัง `act=catpick` ซึ่งเปิดการ์ดที่มีครบทุกหมวด
+ */
+export function categoryButtons(txnId, current, { all = false } = {}) {
+  const list = all
+    ? CATEGORIES.filter((c) => c.key !== current)
+    : pickerFor(current, 4);
+  const btn = (c) => ({ label: `${c.emoji} ${c.key}`, data: `act=cat&id=${txnId}&c=${encodeURIComponent(c.key)}` });
+  const rows = [];
+  for (let i = 0; i < list.length; i += 2) rows.push(list.slice(i, i + 2).map(btn));
+  if (!all && CATEGORIES.length - 1 > list.length) {
+    rows.push({ label: "🏷 หมวดอื่น…", data: `act=catpick&id=${txnId}` });
+  }
+  return rows;
 }
 
 /** ปุ่มจัดการรายการที่เพิ่งบันทึก */
@@ -524,7 +548,8 @@ export function txnListBubble(rows, fromCents) {
       },
       {
         type: "text",
-        text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty].filter(Boolean).join(" · ") || "—",
+        text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty, labelOf(t.category)]
+          .filter(Boolean).join(" · ") || "—",
         size: "xxs", color: "#B0B0B0", wrap: true,
       },
       {

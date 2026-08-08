@@ -13,7 +13,8 @@ import * as ocr from "./ocrClient.js";
 import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
-         summaryBubble, txnListBubble } from "./flex.js";
+         summaryBubble, txnListBubble, categoryButtons } from "./flex.js";
+import { labelOf, isCategory } from "./categories.js";
 import { parseEntry } from "./nlu.js";
 import { nowLocal } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
@@ -198,12 +199,15 @@ function periodAskIfNeeded(userId, txnId) {
 
 // ---------- รูปสลิป ----------
 
-function savedCard(rec, amount, occurredAt) {
+function savedCard(rec, amount, occurredAt, category = null) {
   if (rec.ok) {
     const pending = rec.status === "pending";
     // ต้องโชว์วันที่ที่ลงบัญชี — สลิปใช้วันที่บนใบ ซึ่งมักเป็นเดือนก่อน
     // ไม่บอกแล้วผู้ใช้จะงงว่าทำไม "สรุป" (เดือนนี้) ไม่มียอดนี้
-    const rows = occurredAt ? [{ label: "ลงวันที่", value: occurredAt }] : [];
+    const rows = [
+      occurredAt ? { label: "ลงวันที่", value: occurredAt } : null,
+      category ? { label: "หมวด", value: labelOf(category) } : null,
+    ];
     return card({
       title: pending ? "บันทึกไว้แล้ว — ช่วยตรวจยอด" : "บันทึกแล้ว",
       emoji: pending ? "📝" : "✅",
@@ -216,6 +220,8 @@ function savedCard(rec, amount, occurredAt) {
           ? [{ label: "💰 เป็นรายรับ", data: `act=dir&id=${rec.txnId}&v=in`, primary: true },
              { label: "💸 เป็นรายจ่าย", data: `act=dir&id=${rec.txnId}&v=out` }]
           : []),
+        // ทิศทางยังไม่รู้ = ยังไม่ควรถามเรื่องหมวด ถามทีละเรื่องพอ
+        ...(rec.direction === "out" ? categoryButtons(rec.txnId, category) : []),
         { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
         { label: "📊 ดูสรุป", data: "act=summary" },
       ],
@@ -274,7 +280,8 @@ async function handleImage(event) {
         // ถามทิศทางก่อน — เรื่องเดือนค่อยถามต่อหลังผู้ใช้ตอบ (quick reply โผล่ได้ทีละใบ)
         messages.push(askDirection(rec.txnId, result.amount));
       } else {
-        messages.push(savedCard(rec, result.amount, L.occurredAt(result)));
+        messages.push(savedCard(rec, result.amount, L.occurredAt(result),
+                                L.getTxn(userId, rec.txnId)?.category ?? null));
         const ask = rec.ok ? periodAskIfNeeded(userId, rec.txnId) : null;
         if (ask) messages.push(ask);
       }
@@ -401,6 +408,38 @@ async function handlePostback(event) {
   }
   if (act === "list") return respond(event, txnListBubble(L.recentTxns(userId, 8), L.fromCents));
 
+  // --- หมวดหมู่ ---
+  if (act === "cat") {
+    const c = p.get("c");
+    // ค่ามาจาก postback ซึ่งผู้ใช้ปลอมได้ — ต้องอยู่ในรายการที่รู้จักเท่านั้น
+    // ไม่งั้นจะมีหมวดแปลกปลอมโผล่ในสรุปและงบรายหมวดไปตลอด
+    if (!isCategory(c)) return respond(event, notFoundCard(id));
+    if (!L.setCategory(userId, id, c)) return respond(event, notFoundCard(id));
+    const t = L.getTxn(userId, id);
+    return respond(event, card({
+      title: `จัดเป็นหมวด ${labelOf(c)} แล้ว`, emoji: "📂", tone: "success",
+      rows: [
+        { label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
+        { label: "หมวด", value: labelOf(c) },
+      ],
+      text: "จำไว้ให้แล้ว — รายการคล้ายกันครั้งหน้าผมจัดหมวดนี้ให้เอง",
+      actions: [
+        { label: "📌 ตั้งงบหมวดนี้", fill: `งบ ${c} `, data: "act=prompt&kind=budget" },
+        { label: "📊 ดูสรุป", data: "act=summary", primary: true },
+      ],
+    }));
+  }
+  if (act === "catpick") {
+    const t = L.getTxn(userId, id);
+    if (!t) return respond(event, notFoundCard(id));
+    return respond(event, card({
+      title: "เลือกหมวด", emoji: "📂", tone: "info",
+      rows: [{ label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
+             ...(t.note ? [{ label: "รายการ", value: t.note }] : [])],
+      actions: categoryButtons(id, t.category, { all: true }),
+    }));
+  }
+
   if (act === "skip") {
     return respond(event, card({
       title: "ไว้บอกทีหลังได้", emoji: "👌", tone: "neutral",
@@ -418,9 +457,16 @@ async function handlePostback(event) {
     const confirm = card({
       title: `บันทึกเป็น${DIR_LABEL[v]}แล้ว`, emoji: v === "in" ? "💰" : "💸", tone: "success",
       big: t ? L.fromCents(t.amount_cents) : undefined, bigLabel: t ? DIR_LABEL[v] : undefined,
-      rows: t?.occurred_at ? [{ label: "ลงวันที่", value: t.occurred_at }] : [],
+      rows: [
+        // ไม่มีวันที่บนใบ = ลงตามวันที่บันทึก ต้องบอก ไม่งั้นผู้ใช้หาไม่เจอในสรุป
+        { label: "ลงวันที่", value: t?.occurred_at ?? "ตามวันที่บันทึก (อ่านวันที่บนสลิปไม่ออก)" },
+        t?.category ? { label: "หมวด", value: labelOf(t.category) } : null,
+      ],
       text: r.learned ? "จำบัญชีคุณไว้แล้ว ครั้งต่อไปไม่ต้องถามอีก" : undefined,
-      actions: [{ label: "📊 ดูสรุป", data: "act=summary" }],
+      actions: [
+        ...(v === "out" ? categoryButtons(id, t?.category) : []),
+        { label: "📊 ดูสรุป", data: "act=summary" },
+      ],
     });
     const ask = periodAskIfNeeded(userId, id);
     return respond(event, ask ? [confirm, ask] : confirm);
@@ -686,10 +732,14 @@ async function handleText(event) {
     const rec = L.recordEntry(userId, entry);
     if (rec.ok) {
       try {
+        const cat = L.getTxn(userId, rec.txnId)?.category ?? null;
         await respond(event, card({
           title: "บันทึกแล้ว", emoji: rec.direction === "in" ? "💰" : "💸", tone: "success",
           big: L.fromCents(rec.amountCents), bigLabel: DIR_LABEL[rec.direction],
-          rows: entry.note ? [{ label: "รายการ", value: entry.note }] : [],
+          rows: [
+            entry.note ? { label: "รายการ", value: entry.note } : null,
+            cat ? { label: "หมวด", value: labelOf(cat) } : null,
+          ],
           notes: entry.guessed ? ["ไม่มีคำว่า “จ่าย/ได้” ในข้อความ — ผมเดาให้เป็นรายจ่าย"] : [],
           // เดาเอง → ให้ปุ่มแก้ทันที ดีกว่าบอกให้พิมพ์ใหม่
           actions: [
@@ -697,6 +747,8 @@ async function handleText(event) {
               ? [{ label: "💰 เปลี่ยนเป็นรายรับ", data: `act=dir&id=${rec.txnId}&v=in`, primary: true },
                  { label: "💸 ยืนยันเป็นรายจ่าย", data: `act=dir&id=${rec.txnId}&v=out` }]
               : []),
+            // รายรับไม่ต้องจัดหมวด — หมวดมีไว้คุมรายจ่าย (งบ/สรุปว่าใช้อะไรมากสุด)
+            ...(rec.direction === "out" ? categoryButtons(rec.txnId, cat) : []),
             { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
             { label: "📊 ดูสรุป", data: "act=summary" },
           ],

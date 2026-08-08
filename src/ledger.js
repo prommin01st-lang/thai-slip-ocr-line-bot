@@ -3,6 +3,7 @@
 // แยกจาก db.js (schema/connection) เพื่อให้เทสได้โดยใช้ DB ในหน่วยความจำ
 import { createHash, randomBytes } from "node:crypto";
 import { open, toCents, fromCents, nowIso, nowLocal } from "./db.js";
+import { guessCategory } from "./categories.js";
 
 /**
  * วันที่ที่ใช้จัดกลุ่มรายการในสรุป (นิพจน์ SQL)
@@ -251,8 +252,26 @@ const patternOf = (counterparty) => norm(counterparty).slice(0, 40) || null;
 export function categoryFor(userId, counterparty) {
   const p = patternOf(counterparty);
   if (!p) return null;
-  return db().prepare("SELECT category FROM category_hints WHERE line_user_id = ? AND pattern = ?")
-    .get(userId, p)?.category ?? null;
+  const learned = db().prepare(
+    "SELECT category FROM category_hints WHERE line_user_id = ? AND pattern = ?")
+    .get(userId, p)?.category;
+  // ที่ผู้ใช้เคยกดเลือกเองมาก่อนพจนานุกรมเสมอ — เขารู้ดีกว่าเรา
+  return learned ?? guessCategory(counterparty);
+}
+
+/**
+ * ตั้งหมวดให้รายการ **แล้วจำไว้ใช้ครั้งหน้า**
+ *
+ * การจำคือหัวใจ — ถ้าแค่ตั้งค่าให้รายการเดียว ผู้ใช้ต้องกดใหม่ทุกครั้งที่ซื้อร้านเดิม
+ * ผูกกับ `counterparty` (สลิป) ถ้าไม่มีก็ใช้ `note` (ข้อความที่พิมพ์ในแชท)
+ */
+export function setCategory(userId, txnId, category) {
+  const t = getTxn(userId, txnId);
+  if (!t) return false;
+  db().prepare("UPDATE txns SET category = ? WHERE id = ? AND line_user_id = ?")
+    .run(category, txnId, userId);
+  learnCategory(userId, t.counterparty ?? t.note, category);
+  return true;
 }
 
 export function learnCategory(userId, counterparty, category) {
@@ -426,14 +445,17 @@ export function budgetStatus(userId, from, to, warnAt = 0.8) {
   const d = db();
   const out = [];
   for (const b of getBudgets(userId)) {
+    // ใช้ DATE_OF เหมือน summary() — ถ้ากรอง occurred_at IS NOT NULL ทิ้ง
+    // สลิปที่อ่านวันที่ไม่ออกจะไม่ถูกนับเข้างบ ทั้งที่เป็นเงินที่จ่ายไปจริง
+    // แล้วยอดในการ์ดงบจะไม่ตรงกับยอดในสรุป ซึ่งชวนสับสนหนักกว่าเดิม
     const q = b.category === "*"
       ? d.prepare(`SELECT COALESCE(SUM(amount_cents),0) c FROM txns WHERE line_user_id=?
                    AND direction='out' AND status!='rejected'
-                   AND occurred_at IS NOT NULL AND date(occurred_at) BETWEEN ? AND ?`)
+                   AND ${DATE_OF} BETWEEN ? AND ?`)
           .get(userId, from, to)
       : d.prepare(`SELECT COALESCE(SUM(amount_cents),0) c FROM txns WHERE line_user_id=?
                    AND direction='out' AND status!='rejected' AND category=?
-                   AND occurred_at IS NOT NULL AND date(occurred_at) BETWEEN ? AND ?`)
+                   AND ${DATE_OF} BETWEEN ? AND ?`)
           .get(userId, b.category, from, to);
     const ratio = b.limit_cents > 0 ? q.c / b.limit_cents : 0;
     if (ratio >= warnAt) {
