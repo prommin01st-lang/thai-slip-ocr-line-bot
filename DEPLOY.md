@@ -64,34 +64,72 @@ sudo usermod -aG docker "$USER"     # ต้อง logout/login ใหม่ถ�
 
 ---
 
-## 3. Clone
+## 3. เอาโค้ดขึ้น VPS
 
-repo เป็น **private** ต้องมีสิทธิ์เข้าถึงก่อน
+**repo เป็น private** — VPS ต้องมีสิทธิ์อ่านก่อน เลือกวิธีใดวิธีหนึ่ง
 
+### 3A. Deploy key (แนะนำ — ให้สิทธิ์อ่าน repo เดียว)
+
+บน VPS:
 ```bash
-git clone git@github.com:prommin01st-lang/thai-slip-ocr-line-bot.git slipingman
+ssh-keygen -t ed25519 -f ~/.ssh/slipingman_deploy -N "" -C "slipingman-vps"
+cat ~/.ssh/slipingman_deploy.pub        # คัดลอกค่านี้
+cat >> ~/.ssh/config <<'EOF'
+Host github-slipingman
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/slipingman_deploy
+  IdentitiesOnly yes
+EOF
+```
+
+**ให้มนุษย์เอา public key ไปวางที่** repo → Settings → Deploy keys → Add deploy key
+(ไม่ต้องติ๊ก "Allow write access")
+
+แล้ว clone:
+```bash
+git clone git@github-slipingman:prommin01st-lang/thai-slip-ocr-line-bot.git slipingman
 cd slipingman && git log --oneline -1
 ```
+
+### 3B. rsync จากเครื่อง dev (ไม่ต้องยุ่งกับ key)
+
+รันจากเครื่อง dev — **ต้องมี `--exclude` ครบ** ไม่งั้นจะพา `.env` ของ dev
+และ DB ที่มีข้อมูลจริงขึ้นไปด้วย:
+```bash
+rsync -av --delete \
+  --exclude '.env' --exclude 'data/' --exclude 'logs/' \
+  --exclude 'node_modules/' --exclude 'bench/.venv-ocr/' --exclude '.git/' \
+  ./ user@vps:~/slipingman/
+```
+
+### 3C. เปิด repo เป็น public แล้ว clone ตรง ๆ
+ง่ายสุดแต่เปิดโค้ดสู่สาธารณะ — **ต้องให้เจ้าของระบบตัดสินใจเท่านั้น**
+
+---
+
+**สิ่งเดียวที่ไม่ได้มากับ repo คือ `.env`** — สร้างบน VPS ตามข้อ 4
+(VPS ต้องต่อเน็ตได้ตอน build เพราะต้องโหลด npm / pip / โมเดล PaddleOCR)
 
 ---
 
 ## 4. ตั้งค่า `.env`
 
+**`.env` ที่จำเป็นมีแค่ 4 บรรทัด** — ที่เหลือ compose เติมให้เอง
+(`OCR_ENDPOINT`, `PORT`, `OCR_TIMEOUT_MS` ถูก override ใน `docker-compose.yml` อยู่แล้ว
+ค่าใน `.env` ไม่มีผล — ตรวจได้ด้วย `docker compose config`)
+
 ```bash
-cp .env.example .env
+cat > .env <<EOF
+LINE_CHANNEL_SECRET=<ค่าจริงจากข้อ 1>
+LINE_CHANNEL_ACCESS_TOKEN=<ค่าจริงจากข้อ 1>
+OCR_TOKEN=$(openssl rand -hex 32)
+OCR_THREADS=$(nproc)
+EOF
+chmod 600 .env
 ```
 
-แก้ 2 บรรทัดนี้ด้วยค่าจากข้อ 1:
-```
-LINE_CHANNEL_SECRET=<ค่าจริง>
-LINE_CHANNEL_ACCESS_TOKEN=<ค่าจริง>
-```
-
-เพิ่มอีก 2 บรรทัด:
-```bash
-echo "OCR_TOKEN=$(openssl rand -hex 32)" >> .env    # กัน ocr ถูกเรียกมั่ว
-echo "OCR_THREADS=$(nproc)" >> .env                 # ให้ตรงกับ core จริง
-```
+`PUBLIC_URL` เพิ่มทีหลังตอนมีโดเมนแล้ว (ข้อ 7)
 
 **ตรวจว่าครบ** (ไม่พิมพ์ค่าออกมา แค่ดูว่าไม่ว่าง — ทุกอันต้องได้ `1`):
 ```bash
