@@ -25,6 +25,10 @@ app.get("/health", async (_req, res) => {
  * ตอบ 404 เหมือนกันหมดไม่ว่า token ผิด/หมดอายุ/ใช้ไปแล้ว — ไม่บอกใบ้ว่าอันไหนมีอยู่จริง
  */
 app.get("/export/:token", (req, res) => {
+  // ปิดฟีเจอร์แล้วต้องปิดทางนี้ด้วย — token ที่ออกไปก่อนหน้ายังไม่หมดอายุ
+  // ซ่อนแค่ปุ่มไม่พอ ลิงก์เก่าในแชทยังกดโหลดได้อยู่
+  if (!config.exportEnabled) return res.status(404).type("text/plain; charset=utf-8").send("ไม่พบ");
+
   const userId = L.consumeExportToken(req.params.token);
   if (!userId) return res.status(404).type("text/plain; charset=utf-8").send("ลิงก์นี้หมดอายุหรือถูกใช้ไปแล้ว");
 

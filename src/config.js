@@ -20,6 +20,13 @@ export const config = {
   // ไม่ตั้ง = ปิดฟีเจอร์ส่งออก (บอกผู้ใช้ตรง ๆ ดีกว่าส่งลิงก์เสีย)
   publicUrl: (process.env.PUBLIC_URL || "").replace(/\/$/, ""),
 
+  // ส่งออก CSV — **ปิดไว้เป็นค่าเริ่มต้น** เปิดด้วย EXPORT_CSV=on
+  //
+  // แยกจาก PUBLIC_URL ตั้งใจ: PUBLIC_URL ถูกตั้งเพราะเหตุผลอื่นได้ (webhook, LIFF)
+  // ถ้าผูกการมองเห็นปุ่มไว้กับมันอย่างเดียว วันหนึ่งปุ่มจะโผล่กลับมาเองโดยไม่มีใครสั่ง
+  // โค้ดฝั่งหลัง (route, token, exportCsv) ยังอยู่ครบ — เปิดกลับได้ด้วยค่าใน .env
+  exportEnabled: /^(1|true|on|yes)$/i.test(process.env.EXPORT_CSV || ""),
+
   // slip-ocr-th/serve.py (GPU, :8100) หรือ serve_paddle.py (CPU, :8101)
   ocrEndpoint: (process.env.OCR_ENDPOINT || "http://localhost:8100").replace(/\/$/, ""),
   // ต้องตรงกับ SLIP_OCR_TOKEN ฝั่ง backend; ว่าง = backend เปิดโล่ง (โหมด dev บน localhost)

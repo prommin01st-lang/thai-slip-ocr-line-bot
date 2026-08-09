@@ -113,8 +113,9 @@ const settingsCard = (userId) => {
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       { label: "📌 ตั้งงบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
       { label: "📌 ตั้งงบรายหมวด", fill: "งบ อาหาร ", data: "act=prompt&kind=budget" },
-      // โผล่เฉพาะเมื่อมี PUBLIC_URL — ไม่มีโดเมนสาธารณะ ลิงก์ดาวน์โหลดก็เปิดไม่ได้
-      ...(config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
+      // ต้องเปิด EXPORT_CSV *และ* มี PUBLIC_URL ถึงจะโผล่
+      // (ไม่มีโดเมนสาธารณะ ลิงก์ดาวน์โหลดก็เปิดไม่ได้อยู่ดี)
+      ...(config.exportEnabled && config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
       { label: "🔒 ข้อมูลของฉัน", text: "ข้อมูลของฉัน" },
     ],
   });
@@ -465,7 +466,11 @@ async function handlePostback(event) {
     if (!t) return respond(event, notFoundCard(id));
     return respond(event, askDirection(id, L.fromCents(t.amount_cents)));
   }
-  if (act === "export") return respond(event, exportCard(userId));
+  // ปิดอยู่ = ทำเหมือนไม่มี action นี้ ไม่งั้นปุ่มเก่าในแชทที่เลื่อนขึ้นไปยังกดได้
+  if (act === "export") {
+    if (!config.exportEnabled) return;
+    return respond(event, exportCard(userId));
+  }
   if (act === "settings") return respond(event, settingsCard(userId));
   if (act === "forgetacct") {
     const n = L.forgetAccounts(userId);
@@ -680,7 +685,7 @@ async function handleText(event) {
         { label: "ให้ความยินยอม", value: u.consent_at.slice(0, 10) },
       ],
       actions: [
-        ...(config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
+        ...(config.exportEnabled && config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
         { label: "⚙️ ตั้งค่า", data: "act=settings" },
         { label: "🗑 ลบข้อมูลทั้งหมด", text: "ลบข้อมูลของฉัน" },
       ],
@@ -843,7 +848,7 @@ async function handleText(event) {
     }));
   }
 
-  if (/^(ส่งออก|export|csv)$/i.test(text)) {
+  if (config.exportEnabled && /^(ส่งออก|export|csv)$/i.test(text)) {
     if (!L.hasConsent(userId)) return respond(event, consentCard());
     return respond(event, exportCard(userId));
   }
