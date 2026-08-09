@@ -1,5 +1,6 @@
 // richmenu.mjs — สร้าง/ลบ rich menu (เมนูล่างของแชท)
 //
+//   node scripts/richmenu.mjs check    # ตรวจรูปอย่างเดียว ไม่แตะ LINE (ไม่ต้องมี token)
 //   node scripts/richmenu.mjs create   # สร้าง + อัปโหลดรูป + ตั้งเป็นเมนู default
 //   node scripts/richmenu.mjs list     # ดูเมนูที่มี
 //   node scripts/richmenu.mjs clear    # ลบทั้งหมด
@@ -15,7 +16,10 @@ import { fileURLToPath } from "node:url";
 import { messagingApi } from "@line/bot-sdk";
 
 const TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-if (!TOKEN) { console.error("!! ไม่มี LINE_CHANNEL_ACCESS_TOKEN ใน .env"); process.exit(1); }
+// `check` ไม่แตะ LINE เลย — คนออกแบบรูปจะได้ตรวจไฟล์ตัวเองได้โดยไม่ต้องมี token
+if (!TOKEN && process.argv[2] !== "check") {
+  console.error("!! ไม่มี LINE_CHANNEL_ACCESS_TOKEN ใน .env"); process.exit(1);
+}
 
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: TOKEN });
 const blob = new messagingApi.MessagingApiBlobClient({ channelAccessToken: TOKEN });
@@ -64,33 +68,19 @@ const MENU = {
   ],
 };
 
-const cmd = process.argv[2] || "list";
-
-if (cmd === "list") {
-  const { richmenus } = await client.getRichMenuList();
-  if (!richmenus.length) console.log("ยังไม่มี rich menu");
-  for (const m of richmenus) console.log(`  ${m.richMenuId}  ${m.name}  (${m.areas.length} ปุ่ม)`);
-  const def = await client.getDefaultRichMenuId().catch(() => null);
-  console.log(`default: ${def?.richMenuId ?? "(ไม่ได้ตั้ง)"}`);
-
-} else if (cmd === "clear") {
-  const { richmenus } = await client.getRichMenuList();
-  for (const m of richmenus) {
-    await client.deleteRichMenu(m.richMenuId);
-    console.log(`ลบ ${m.richMenuId}`);
-  }
-  console.log("ลบครบแล้ว");
-
-} else if (cmd === "create") {
+/**
+ * ตรวจรูปก่อนยิงขึ้น LINE — ขนาดผิดแปลว่าพิกัดปุ่มเลื่อนไปทับช่องอื่น
+ * ซึ่งจะกลายเป็น "กดสรุปแล้วเปิดกล้อง" หาสาเหตุยากกว่าให้มันฟ้องตรงนี้เยอะ
+ */
+function checkImage() {
   if (!existsSync(IMAGE)) {
     console.error(`!! ไม่พบรูป ${IMAGE}\n   สร้างก่อนด้วย: python3 scripts/richmenu_image.py`);
     process.exit(1);
   }
   const bytes = readFileSync(IMAGE);
-  console.log(`รูป: ${IMAGE.split("/assets/")[1]}  (${(statSync(IMAGE).size / 1024).toFixed(0)} KB)`);
+  const kb = statSync(IMAGE).size / 1024;
+  console.log(`รูป: ${IMAGE.split("/assets/")[1]}  (${kb.toFixed(0)} KB)`);
 
-  // ตรวจรูปก่อนยิงขึ้น LINE — ขนาดผิดแปลว่าพิกัดปุ่มด้านล่างเลื่อนไปทับช่องอื่น
-  // ซึ่งจะกลายเป็น "กดสรุปแล้วเปิดกล้อง" หาสาเหตุยากกว่าให้มันฟ้องตรงนี้เยอะ
   if (bytes.length > MAX_BYTES) {
     console.error(`!! รูปใหญ่เกิน — ${(bytes.length / 1024 / 1024).toFixed(2)} MB (LINE รับไม่เกิน 1 MB)`);
     process.exit(1);
@@ -106,6 +96,37 @@ if (cmd === "list") {
     console.error("   สเปกเต็ม: assets/RICHMENU-SPEC.md");
     process.exit(1);
   }
+  console.log(`ผ่าน: ${dims[0]}x${dims[1]} · ตาราง 3x2 ช่องละ ${CW}x${CH}`);
+  return bytes;
+}
+
+const cmd = process.argv[2] || "list";
+
+if (cmd === "check") {
+  // ตรวจอย่างเดียว ไม่แตะ LINE — ให้คนออกแบบรูปลองเองได้โดยไม่ต้องมี token
+  checkImage();
+  for (const [i, a] of MENU.areas.entries()) {
+    const { x, y, width, height } = a.bounds;
+    console.log(`  ช่อง ${i + 1}: x=${x} y=${y} ${width}x${height}  → ${a.action.label}`);
+  }
+
+} else if (cmd === "list") {
+  const { richmenus } = await client.getRichMenuList();
+  if (!richmenus.length) console.log("ยังไม่มี rich menu");
+  for (const m of richmenus) console.log(`  ${m.richMenuId}  ${m.name}  (${m.areas.length} ปุ่ม)`);
+  const def = await client.getDefaultRichMenuId().catch(() => null);
+  console.log(`default: ${def?.richMenuId ?? "(ไม่ได้ตั้ง)"}`);
+
+} else if (cmd === "clear") {
+  const { richmenus } = await client.getRichMenuList();
+  for (const m of richmenus) {
+    await client.deleteRichMenu(m.richMenuId);
+    console.log(`ลบ ${m.richMenuId}`);
+  }
+  console.log("ลบครบแล้ว");
+
+} else if (cmd === "create") {
+  const bytes = checkImage();
 
   // ลบของเก่าก่อน ไม่งั้นเมนูค้างสะสมจนชน limit
   const { richmenus } = await client.getRichMenuList();
@@ -119,6 +140,6 @@ if (cmd === "list") {
   console.log("   (ผู้ใช้อาจต้องปิด-เปิดห้องแชทใหม่ถึงจะเห็น)");
 
 } else {
-  console.error("ใช้: node scripts/richmenu.mjs [create|list|clear]");
+  console.error("ใช้: node scripts/richmenu.mjs [check|create|list|clear]");
   process.exit(1);
 }
