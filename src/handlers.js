@@ -342,14 +342,15 @@ const LIST_LIMIT = 8;
  *   d = in|out           กรองรายรับ/รายจ่าย
  *   c = <ชื่อหมวด> | "-"  กรองหมวด ("-" = ยังไม่จัดหมวด)
  */
-export function listMessage(userId, { d, c } = {}) {
+export function listMessage(userId, { d, c, s } = {}) {
   // ค่าจาก postback ผู้ใช้ปลอมได้ — รับเฉพาะที่รู้จัก ไม่งั้นตัวกรองที่ไม่มีจริง
   // จะให้ผลลัพธ์ว่างเปล่าแล้วดูเหมือนข้อมูลหาย
   const dir = d === "in" || d === "out" ? d : null;
   const cat = c === "-" || isCategory(c) ? c : null;
-  const f = { direction: dir, category: cat };
+  const pending = s === "pending";
+  const f = { direction: dir, category: cat, status: pending ? "pending" : null };
   return txnListBubble(L.recentTxns(userId, LIST_LIMIT, f), L.fromCents,
-                       { dir, cat, total: L.countTxns(userId, f) });
+                       { dir, cat, pending, total: L.countTxns(userId, f) });
 }
 
 /**
@@ -481,7 +482,29 @@ async function handlePostback(event) {
     return respond(event, settingsCard(userId));
   }
   if (act === "list") {
-    return respond(event, listMessage(userId, { d: p.get("d"), c: p.get("c") }));
+    return respond(event, listMessage(userId, { d: p.get("d"), c: p.get("c"), s: p.get("s") }));
+  }
+  if (act === "ok") {
+    // ยืนยันว่ายอดที่ระบบอ่านมาถูก — เดิมพ้น pending ได้ทางเดียวคือ "แก้ยอด"
+    // ซึ่งใช้ไม่ได้ถ้าเลขถูกอยู่แล้ว หมายเหตุบนการ์ดสรุปเลยค้างตลอดไป
+    if (!L.confirmTxn(userId, id)) return respond(event, notFoundCard(id));
+    const t = L.getTxn(userId, id);
+    const left = L.countTxns(userId, { status: "pending" });
+    return respond(event, card({
+      title: "ยืนยันแล้ว", emoji: "✅", tone: "success",
+      rows: [
+        { label: "รายการ", value: `#${t.id}` },
+        { label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
+        { label: "เหลือรอตรวจ", value: left ? `${left} รายการ` : "ไม่มีแล้ว" },
+      ],
+      text: left ? "ยังมีรายการที่ต้องตรวจอยู่" : "ตรวจครบทุกรายการแล้ว",
+      actions: [
+        left
+          ? { label: "📝 ดูที่เหลือ", data: "act=list&s=pending", primary: true }
+          : { label: "🧾 กลับไปรายการ", data: "act=list", primary: true },
+        { label: "📊 ดูสรุป", data: "act=summary" },
+      ],
+    }));
   }
   if (act === "listcat") {
     return respond(event, card({

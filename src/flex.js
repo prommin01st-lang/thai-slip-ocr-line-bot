@@ -477,7 +477,13 @@ export function summaryBubble(s, fromCents) {
                (s.unknown_cents ? ` รวม ${fromCents(s.unknown_cents)} ฿ (ยังไม่นับในยอดข้างบน)` : "") +
                ` — กด “รายการล่าสุด” เพื่อระบุ`);
   }
-  if (s.pending_n) notes.push(`📝 ${s.pending_n} รายการรอตรวจยอด`);
+  // บอกด้วยว่ามันคืออะไรและต้องทำอะไร — เดิมเขียนแค่ "1 รายการรอตรวจยอด"
+  // ผู้ใช้ไม่รู้ว่ารายการไหน ไม่รู้ว่าต้องทำยังไง และไม่มีปุ่มพาไป (มีปุ่มให้แล้วที่ footer)
+  if (s.pending_n) {
+    notes.push(`📝 ${s.pending_n} รายการที่ระบบไม่มั่นใจ — อ่านสลิปได้ไม่ชัด ` +
+               `หรือเดาเองว่าเป็นรายรับ/รายจ่าย ยอดถูกนับรวมไปแล้ว ` +
+               `กดปุ่มล่างเพื่อดูว่ารายการไหน`);
+  }
   if (notes.length) {
     body.push({
       type: "box", layout: "vertical", margin: "lg", paddingAll: "md", cornerRadius: "md",
@@ -497,6 +503,12 @@ export function summaryBubble(s, fromCents) {
     footer: {
       type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
       contents: [
+        // ต้องมีทางกดไปดูว่า "รายการที่ระบบไม่มั่นใจ" คืออันไหน
+        // ไม่งั้นหมายเหตุนั้นเป็นแค่ข้อความที่ทำอะไรต่อไม่ได้
+        ...(s.pending_n ? [{
+          type: "button", height: "sm", style: "primary", color: "#9A6B12",
+          action: { type: "postback", label: "📝 ดูรายการที่ต้องตรวจ", data: "act=list&s=pending" },
+        }] : []),
         ...(s.outside_n ? [{
           type: "button", height: "sm", style: "primary", color: "#2E5B7D",
           action: { type: "postback", label: "📅 ดูสรุปทั้งหมด", data: "act=sum&r=all" },
@@ -545,8 +557,9 @@ const chip = (icon, action, bg = CHIP_BG) => ({
 });
 
 /** ป้ายบอกว่ากรองอะไรอยู่ — null = ไม่ได้กรอง */
-function filterLabel({ dir, cat } = {}) {
+function filterLabel({ dir, cat, pending } = {}) {
   const parts = [];
+  if (pending) parts.push("📝 รอตรวจ");
   if (dir === "out") parts.push("💸 รายจ่าย");
   else if (dir === "in") parts.push("💰 รายรับ");
   if (cat === "-") parts.push("🏷 ยังไม่จัดหมวด");
@@ -604,11 +617,18 @@ export function txnListBubble(rows, fromCents, filter = {}) {
       chip("✏️", { type: "postback", label: "แก้ยอด", data: `act=prompt&kind=edit&id=${t.id}`,
                    inputOption: "openKeyboard", fillInText: `แก้ ${t.id} ` }),
     ];
+    // ปุ่มช่องที่ 3 เปลี่ยนตามสถานะ — เอาสิ่งที่ "ค้างอยู่" ขึ้นมาก่อนเสมอ
+    // รายการที่ยังไม่ยืนยัน ✅ สำคัญกว่าหมวด เพราะจัดหมวดทีหลังได้
+    // แต่ pending ที่ค้างจะไปขึ้นเตือนบนการ์ดสรุปทุกครั้ง
+    if (t.status === "pending") {
+      // unshift แล้วได้ ✅ 🗑 ✏️ = ครบ 3 ช่องพอดี ไม่ต้องเติม filler
+      acts.unshift(chip("✅", { type: "postback", label: "ยืนยันว่าถูก", data: `act=ok&id=${t.id}` },
+                        CHIP_TODO));
     // แก้หมวดย้อนหลัง — หมวดถูกเดาให้ตอนบันทึก ถ้าเดาผิดหรือยังไม่ได้จัดต้องแก้จากตรงนี้ได้
     // มีเฉพาะรายจ่าย เพราะหมวดมีไว้คุมงบ/ดูว่าใช้อะไรมากสุด
     // ยังไม่มีหมวด → ปุ่มเป็นสีเหลือง สะดุดตาว่ายังค้างอยู่
     // (ป้ายข้อความ "จัดหมวด/เปลี่ยนหมวด" ใช้ไม่ได้แล้วเพราะเหลือแต่ไอคอน)
-    if (t.direction === "out") {
+    } else if (t.direction === "out") {
       acts.push(chip("📂", { type: "postback", label: "หมวด", data: `act=catpick&id=${t.id}` },
                      t.category ? CHIP_BG : CHIP_TODO));
     } else if (t.direction === "unknown") {
@@ -633,8 +653,11 @@ export function txnListBubble(rows, fromCents, filter = {}) {
           // รายละเอียดกับปุ่มอยู่บรรทัดเดียวกัน ปุ่มชิดขวาท้ายรายการ
           type: "box", layout: "horizontal", spacing: "xs", contents: [
             {
-              type: "text", flex: 6, gravity: "center", size: "xxs", color: "#B0B0B0", wrap: true,
-              text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty, labelOf(t.category)]
+              type: "text", flex: 6, gravity: "center", size: "xxs", wrap: true,
+              color: t.status === "pending" ? "#9A6B12" : "#B0B0B0",
+              // ติดป้าย "รอตรวจ" ให้เห็นว่าแถวไหนคือตัวที่การ์ดสรุปเตือนถึง
+              text: [t.status === "pending" ? "📝 รอตรวจ" : null,
+                     t.occurred_at?.slice(0, 16), t.note || t.counterparty, labelOf(t.category)]
                 .filter(Boolean).join(" · ") || "—",
             },
             { type: "box", layout: "horizontal", flex: 5, spacing: "xs", contents: acts },
@@ -646,9 +669,11 @@ export function txnListBubble(rows, fromCents, filter = {}) {
   });
 
   // อธิบายไอคอนครั้งเดียวที่หัวการ์ด — โชว์เฉพาะไอคอนที่มีจริงในชุดนี้
-  const legend = ["🗑 ลบ", "✏️ แก้ยอด",
-    rows.some((t) => t.direction === "out") ? "📂 หมวด" : null,
-    rows.some((t) => t.direction === "unknown") ? "↕️ รับ/จ่าย" : null,
+  const legend = [
+    rows.some((t) => t.status === "pending") ? "✅ ยืนยันว่าถูก" : null,
+    "🗑 ลบ", "✏️ แก้ยอด",
+    rows.some((t) => t.status !== "pending" && t.direction === "out") ? "📂 หมวด" : null,
+    rows.some((t) => t.status !== "pending" && t.direction === "unknown") ? "↕️ รับ/จ่าย" : null,
   ].filter(Boolean).join(" · ");
 
   const fbtn = (label, data, on) => ({

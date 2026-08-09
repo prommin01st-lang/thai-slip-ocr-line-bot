@@ -313,6 +313,19 @@ export function setCategory(userId, txnId, category) {
   return true;
 }
 
+/**
+ * ผู้ใช้ตรวจแล้วบอกว่าถูก → เลิกเป็น pending
+ *
+ * เดิมมีทางเดียวที่จะพ้น pending คือ "แก้ยอด" (updateTxn เคลียร์ให้) — แต่ถ้าเลขที่
+ * ระบบอ่านมาถูกอยู่แล้ว ผู้ใช้ไม่มีอะไรจะแก้ การ์ดสรุปจึงขึ้นว่ารอตรวจค้างอยู่ตลอด
+ * โดยไม่มีทางปิด
+ */
+export function confirmTxn(userId, txnId) {
+  return db().prepare(`
+    UPDATE txns SET status = 'confirmed'
+    WHERE id = ? AND line_user_id = ? AND status = 'pending'`).run(txnId, userId).changes > 0;
+}
+
 export function learnCategory(userId, counterparty, category) {
   const p = patternOf(counterparty);
   if (!p) return false;
@@ -362,8 +375,12 @@ export function summary(userId, from, to) {
     unknown_n: unknown.n, unknown_cents: unknown.cents ?? 0,
     net_cents: (income.cents ?? 0) - (expense.cents ?? 0),
     top_categories: topCats.map((c) => ({ ...c, amount: fromCents(c.cents) })),
-    pending_n: d.prepare(`SELECT COUNT(*) n FROM txns
-                          WHERE line_user_id = ? AND status = 'pending'`).get(userId).n,
+    // ต้องกรองช่วงวันเดียวกับยอดด้านบน — เดิมนับทั้งชีวิต ทำให้การ์ด "สรุปเดือนนี้"
+    // ขึ้นว่ามีรายการรอตรวจ ทั้งที่รายการนั้นอยู่คนละเดือน กดเข้าไปก็ไม่เจอ
+    pending_n: d.prepare(`
+      SELECT COUNT(*) n FROM txns
+      WHERE line_user_id = ? AND status = 'pending'
+        AND ${DATE_OF} BETWEEN ? AND ?`).get(userId, from, to).n,
     outside_n: outside.n,
     outside_oldest: outside.oldest,
     outside_newest: outside.newest,
@@ -384,7 +401,7 @@ export function fullRange(userId) {
  * เงื่อนไข WHERE ร่วมของ "รายการ" — ใช้ทั้งตอนดึงและตอนนับ
  * แยกออกมาเพื่อไม่ให้สองที่หลุดจากกัน (นับได้ 5 แต่แสดง 3 คือบั๊กที่หาสาเหตุยาก)
  */
-function txnFilter(userId, { direction, category } = {}) {
+function txnFilter(userId, { direction, category, status } = {}) {
   const where = ["t.line_user_id = ?", "t.status != 'rejected'"];
   const args = [userId];
   if (direction === "in" || direction === "out" || direction === "unknown") {
@@ -394,6 +411,7 @@ function txnFilter(userId, { direction, category } = {}) {
   // "-" = ยังไม่ได้จัดหมวด — ต้องกรองได้ ไม่งั้นหารายการที่ค้างรอจัดหมวดไม่เจอเลย
   if (category === "-") where.push("t.category IS NULL");
   else if (category) { where.push("t.category = ?"); args.push(category); }
+  if (status === "pending") where.push("t.status = 'pending'");
   return { sql: where.join(" AND "), args };
 }
 

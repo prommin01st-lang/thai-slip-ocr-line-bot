@@ -638,4 +638,52 @@ assert.ok(filtered.contents.header.contents[0].text.includes("รายจ่า
 assert.ok(filtered.altText.includes("รายจ่าย"), "altText ต้องบอกตัวกรอง");
 ok("หัวการ์ดและ altText บอกว่ากำลังกรองอะไรอยู่");
 
+// --- "รายการรอตรวจ" ต้องหาเจอและปิดได้ ---
+//
+// pending = ระบบไม่มั่นใจตอนบันทึก (OCR อ่านไม่ชัด หรือเดาทิศทางเอง)
+// เดิมการ์ดสรุปบอกแค่ "1 รายการรอตรวจยอด" แล้วจบ — ไม่รู้ว่ารายการไหน
+// ไม่มีปุ่มพาไป และถ้ายอดถูกอยู่แล้วก็ไม่มีทางปิดสถานะเลย
+const PU = "Upending0000000000000000000001";
+L.ensureUser(PU, "P"); L.grantConsent(PU);
+const pOld = L.recordEntry(PU, { direction: "out", amountCents: 5000, note: "กาแฟ", guessed: true },
+                           { occurredAt: "2020-01-15 10:00" });
+const pNow = L.recordEntry(PU, { direction: "out", amountCents: 7000, note: "ชานม", guessed: true });
+const pOk = L.recordEntry(PU, { direction: "out", amountCents: 9000, note: "ข้าว" });
+assert.equal(L.getTxn(PU, pNow.txnId).status, "pending", "เดาทิศทางเอง → pending");
+assert.equal(L.getTxn(PU, pOk.txnId).status, "confirmed", "รู้ทิศทางชัด → confirmed");
+
+// นับเฉพาะช่วงที่สรุปอยู่ — เดิมนับทั้งชีวิต ทำให้เตือนถึงรายการคนละเดือนที่กดไปก็ไม่เจอ
+const [mFrom, mTo] = N.thisMonth();
+assert.equal(L.summary(PU, mFrom, mTo).pending_n, 1, "เดือนนี้มีรอตรวจ 1 (ไม่รวมของปี 2020)");
+assert.equal(L.summary(PU, "2020-01-01", "2020-01-31").pending_n, 1, "ย้อนไปดูเดือนนั้นก็เจอของมัน");
+ok("นับรายการรอตรวจตามช่วงวันที่ของสรุป ไม่ใช่ทั้งชีวิต");
+
+// การ์ดสรุปต้องมีปุ่มพาไปดู ไม่ใช่ข้อความลอย ๆ
+const sumJson = JSON.stringify(summaryBubble({ ...L.summary(PU, mFrom, mTo), title: "x" }, fromCents));
+assert.ok(sumJson.includes("act=list&s=pending"), "ต้องมีปุ่มพาไปดูรายการที่ต้องตรวจ");
+assert.ok(sumJson.includes("ระบบไม่มั่นใจ"), "ต้องอธิบายว่ามันคืออะไร ไม่ใช่แค่ ‘รอตรวจยอด’");
+ok("การ์ดสรุปอธิบายและมีปุ่มพาไปดูรายการที่ต้องตรวจ");
+
+// กรองเฉพาะรอตรวจได้ และแถวนั้นต้องมีปุ่มยืนยัน
+assert.equal(L.recentTxns(PU, 10, { status: "pending" }).length, 2, "กรองรอตรวจได้ทั้ง 2 ใบ");
+assert.equal(L.countTxns(PU, { status: "pending" }), 2);
+const pList = JSON.stringify(txnListBubble(L.recentTxns(PU, 10, { status: "pending" }), fromCents,
+                                           { pending: true, total: 2 }));
+assert.ok(pList.includes(`act=ok&id=${pNow.txnId}`), "แถวรอตรวจต้องมีปุ่ม ✅ ยืนยัน");
+assert.ok(pList.includes("📝 รอตรวจ"), "ต้องติดป้ายให้เห็นว่าแถวไหนคือตัวที่เตือนถึง");
+assert.ok(!JSON.stringify(txnListBubble([L.getTxn(PU, pOk.txnId)], fromCents)).includes("act=ok&id="),
+  "แถวที่ยืนยันแล้วไม่ต้องมีปุ่มนี้");
+ok("กรองเฉพาะรอตรวจได้ + แถวติดป้ายและมีปุ่มยืนยัน");
+
+// ปิดสถานะได้โดยไม่ต้องแก้ยอด — นี่คือทางออกที่เดิมไม่มี
+const amtBefore = L.getTxn(PU, pNow.txnId).amount_cents;
+assert.equal(L.confirmTxn(PU, pNow.txnId), true, "ยืนยันได้");
+assert.equal(L.getTxn(PU, pNow.txnId).status, "confirmed");
+assert.equal(L.getTxn(PU, pNow.txnId).amount_cents, amtBefore, "ยอดต้องไม่ถูกแตะ");
+assert.equal(L.confirmTxn(PU, pNow.txnId), false, "ยืนยันซ้ำต้องไม่นับเพิ่ม");
+assert.equal(L.summary(PU, mFrom, mTo).pending_n, 0, "เตือนบนการ์ดสรุปต้องหายไป");
+assert.ok(!JSON.stringify(summaryBubble({ ...L.summary(PU, mFrom, mTo), title: "x" }, fromCents))
+  .includes("act=list&s=pending"), "ไม่เหลือรอตรวจแล้ว ปุ่มต้องหายด้วย");
+ok("ยืนยันว่ายอดถูกได้โดยไม่ต้องแก้อะไร → เตือนหายจากการ์ดสรุป");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);
