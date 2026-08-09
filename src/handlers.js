@@ -14,7 +14,7 @@ import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
 import { take } from "./ratelimit.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
-         summaryBubble, txnListBubble, categoryButtons, categoryFilterButtons,
+         summaryBubble, txnListBubble, categoryButtons, categoryPickerBubble,
          shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseEntry } from "./nlu.js";
@@ -507,17 +507,7 @@ async function handlePostback(event) {
     }));
   }
   if (act === "listcat") {
-    return respond(event, card({
-      title: "กรองตามหมวด", emoji: "📂", tone: "info",
-      text: "เลือกหมวดที่อยากดู",
-      actions: [
-        ...categoryFilterButtons(),
-        // รายการที่ยังไม่มีหมวดคือของที่รอจัด — ต้องหาเจอ ไม่งั้นไม่มีทางไล่เก็บให้ครบ
-        { label: "🏷 ยังไม่จัดหมวด", data: "act=list&c=-" },
-        { label: "🧾 ดูทั้งหมด", data: "act=list", primary: true },
-      ],
-      altText: "เลือกหมวดที่อยากกรองดู",
-    }));
+    return respond(event, categoryPickerBubble(L.categoryTotals(userId), L.fromCents));
   }
 
   // --- หมวดหมู่ ---

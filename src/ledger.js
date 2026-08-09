@@ -428,6 +428,23 @@ export function recentTxns(userId, limit = 10, filter = {}) {
 }
 
 /**
+ * ยอดรวมรายหมวด สำหรับหน้าจอ "กรองตามหมวด"
+ *
+ * คืนเฉพาะหมวดที่ **มีรายการจริง** — เดิมหน้านั้นโชว์ปุ่มครบทุกหมวดตายตัว
+ * ผู้ใช้เลยเจอหมวดที่ยังไม่เคยใช้ กดเข้าไปก็ว่างเปล่า
+ *
+ * เฉพาะรายจ่าย เพราะหมวดมีไว้คุมงบ (`category` ของรายรับไม่ถูกใช้ที่ไหน)
+ * `category = '-'` คือยังไม่ได้จัดหมวด — ต้องอยู่ในลิสต์ด้วย ไม่งั้นไล่เก็บไม่ได้
+ */
+export function categoryTotals(userId) {
+  return db().prepare(`
+    SELECT COALESCE(category, '-') AS category, SUM(amount_cents) AS cents, COUNT(*) AS n
+    FROM txns
+    WHERE line_user_id = ? AND status != 'rejected' AND direction = 'out'
+    GROUP BY 1 ORDER BY cents DESC`).all(userId);
+}
+
+/**
  * จำนวนรายการทั้งหมดที่ตรงตัวกรอง — การ์ดโชว์ได้แค่ 8 แถว
  * ถ้าไม่บอกจำนวนจริง ผู้ใช้จะเข้าใจว่ามีอยู่เท่าที่เห็นแล้วสรุปผิด
  */

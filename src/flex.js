@@ -567,12 +567,78 @@ function filterLabel({ dir, cat, pending } = {}) {
   return parts.length ? parts.join(" · ") : null;
 }
 
-/** ปุ่มเลือกหมวดสำหรับ "กรองรายการ" — ต่างจาก categoryButtons ตรงที่ไม่ผูกกับ txn ใด */
-export function categoryFilterButtons() {
-  const btn = (c) => ({ label: `${c.emoji} ${c.key}`, data: `act=list&c=${encodeURIComponent(c.key)}` });
-  const rows = [];
-  for (let i = 0; i < CATEGORIES.length; i += 2) rows.push(CATEGORIES.slice(i, i + 2).map(btn));
-  return rows;
+/**
+ * หน้าจอ "กรองตามหมวด" — โชว์ยอดจริงของแต่ละหมวด ไม่ใช่ปุ่มเปล่า
+ *
+ * เดิมเป็นปุ่มครบทุกหมวดตายตัว ซึ่งเสียสองต่อ: หมวดที่ยังไม่เคยใช้ก็โผล่มา
+ * (กดเข้าไปว่างเปล่า) และหมวดที่ใช้จริงก็ไม่บอกว่าใช้ไปเท่าไหร่
+ * ทั้งที่ยอดคือสิ่งเดียวที่ทำให้ตัดสินใจได้ว่าจะกดดูอันไหน
+ *
+ * `rows` มาจาก ledger.categoryTotals() — เรียงจากยอดมากไปน้อยมาแล้ว
+ */
+export function categoryPickerBubble(rows, fromCents) {
+  if (!rows.length) {
+    return card({
+      title: "ยังไม่มีรายจ่ายให้กรอง", emoji: "📂", tone: "info",
+      text: "หมวดหมู่ใช้กับรายจ่ายเท่านั้น — พอมีรายจ่ายแล้วหน้านี้จะขึ้นยอดของแต่ละหมวดให้",
+      actions: [{ label: "🧾 ดูรายการทั้งหมด", data: "act=list", primary: true }],
+      altText: "ยังไม่มีรายจ่ายให้กรองตามหมวด",
+    });
+  }
+
+  const total = rows.reduce((s, r) => s + r.cents, 0);
+  const items = rows.map((r) => ({
+    // ทั้งแถวกดได้ ไม่ใช่แค่ปุ่มเล็ก ๆ — เป้ากดใหญ่กว่าและอ่านง่ายกว่า
+    type: "box", layout: "vertical", margin: "md", spacing: "xs", paddingAll: "sm",
+    cornerRadius: "md", backgroundColor: "#FAF8F5",
+    action: { type: "postback", label: r.category === "-" ? "ยังไม่จัดหมวด" : r.category,
+              data: `act=list&c=${encodeURIComponent(r.category)}` },
+    contents: [
+      {
+        type: "box", layout: "baseline", contents: [
+          { type: "text", flex: 5, size: "sm", weight: "bold", color: "#1F1F1F",
+            text: r.category === "-" ? "🏷 ยังไม่จัดหมวด" : labelOf(r.category) },
+          { type: "text", flex: 4, size: "sm", weight: "bold", align: "end", color: "#1F1F1F",
+            text: `${fromCents(r.cents)} ฿` },
+        ],
+      },
+      {
+        type: "box", layout: "baseline", contents: [
+          { type: "text", flex: 5, size: "xxs", color: "#B0B0B0", text: `${r.n} รายการ` },
+          { type: "text", flex: 4, size: "xxs", align: "end", color: "#B0B0B0",
+            text: total ? `${Math.round((r.cents / total) * 100)}%` : "" },
+        ],
+      },
+    ],
+  }));
+
+  return {
+    type: "flex",
+    altText: `กรองตามหมวด — ${rows.length} หมวด รวม ${fromCents(total)} ฿`,
+    contents: {
+      type: "bubble",
+      header: {
+        type: "box", layout: "horizontal", backgroundColor: "#E8EEF6", paddingAll: "md",
+        contents: [{ type: "text", text: "📂 กรองตามหมวด", weight: "bold", size: "sm",
+                     color: "#2E5B7D" }],
+      },
+      body: {
+        type: "box", layout: "vertical", paddingAll: "lg", spacing: "xs",
+        contents: [
+          { type: "text", size: "xxs", color: "#8A8A8A", wrap: true,
+            text: `รายจ่ายทั้งหมดที่บันทึกไว้ รวม ${fromCents(total)} ฿ — กดหมวดที่อยากดู` },
+          ...items,
+        ],
+      },
+      footer: {
+        type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
+        contents: [
+          { type: "button", height: "sm", style: "secondary",
+            action: { type: "postback", label: "🧾 ดูทั้งหมด", data: "act=list" } },
+        ],
+      },
+    },
+  };
 }
 
 /**

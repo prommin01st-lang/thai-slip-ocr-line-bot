@@ -4,6 +4,7 @@ import { open, toCents, fromCents, nowLocal } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as N from "../src/notify.js";
 import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thaiMonth,
+         categoryPickerBubble,
          categoryButtons } from "../src/flex.js";
 import { summaryMessage } from "../src/handlers.js";
 import { guessCategory, isCategory, labelOf } from "../src/categories.js";
@@ -685,5 +686,46 @@ assert.equal(L.summary(PU, mFrom, mTo).pending_n, 0, "เตือนบนก�
 assert.ok(!JSON.stringify(summaryBubble({ ...L.summary(PU, mFrom, mTo), title: "x" }, fromCents))
   .includes("act=list&s=pending"), "ไม่เหลือรอตรวจแล้ว ปุ่มต้องหายด้วย");
 ok("ยืนยันว่ายอดถูกได้โดยไม่ต้องแก้อะไร → เตือนหายจากการ์ดสรุป");
+
+// --- หน้า "กรองตามหมวด" ต้องบอกยอด และไม่โชว์หมวดที่ยังไม่มีของ ---
+//
+// เดิมเป็นปุ่มครบทุกหมวดตายตัว กดหมวดที่ยังไม่เคยใช้แล้วเจอหน้าว่าง
+// และไม่บอกยอดเลย ทั้งที่ยอดคือสิ่งเดียวที่ทำให้ตัดสินใจได้ว่าจะกดดูอันไหน
+const CT = "Ucattotal000000000000000000001";
+L.ensureUser(CT, "C"); L.grantConsent(CT);
+L.recordEntry(CT, { direction: "out", amountCents: 20000, note: "กาแฟ" });     // อาหาร
+L.recordEntry(CT, { direction: "out", amountCents: 5000, note: "ชานม" });      // อาหาร
+L.recordEntry(CT, { direction: "out", amountCents: 60000, note: "แท็กซี่" });  // เดินทาง
+L.recordEntry(CT, { direction: "out", amountCents: 1000, note: "อะไรก็ไม่รู้" }); // ไม่มีหมวด
+L.recordEntry(CT, { direction: "in", amountCents: 999999, note: "เงินเดือน" }); // รายรับ ไม่ควรนับ
+
+const tot = L.categoryTotals(CT);
+assert.deepEqual(tot.map((r) => r.category), ["เดินทาง", "อาหาร", "-"],
+  "ต้องเรียงจากยอดมากไปน้อย และมีเฉพาะหมวดที่มีของจริง");
+assert.equal(tot.find((r) => r.category === "อาหาร").cents, 25000, "รวมยอดในหมวดถูก");
+assert.equal(tot.find((r) => r.category === "อาหาร").n, 2, "นับจำนวนรายการถูก");
+assert.ok(!tot.some((r) => r.cents === 999999), "รายรับต้องไม่ถูกนับ — หมวดใช้กับรายจ่าย");
+ok("ยอดรายหมวด: เฉพาะหมวดที่มีของจริง เรียงตามยอด ไม่ปนรายรับ");
+
+const pick = categoryPickerBubble(tot, fromCents);
+const pickJson = JSON.stringify(pick);
+assert.ok(pickJson.includes("600.00"), "ต้องโชว์ยอดของแต่ละหมวด");
+assert.ok(pickJson.includes("2 รายการ"), "ต้องโชว์จำนวนรายการ");
+assert.ok(pickJson.includes("ยังไม่จัดหมวด"), "ต้องมีแถวของที่ยังไม่จัดหมวด");
+assert.ok(!pickJson.includes("สุขภาพ"), "หมวดที่ไม่เคยใช้ต้องไม่โผล่");
+assert.ok(pickJson.includes("act=list&c=" + encodeURIComponent("เดินทาง")),
+  "ทั้งแถวต้องกดไปหน้ารายการที่กรองแล้วได้");
+validate(pick.contents, "categoryPicker");
+ok("การ์ดเลือกหมวดโชว์ยอด+จำนวน+สัดส่วน และกดได้ทั้งแถว");
+
+// ไม่มีรายจ่ายเลย → ต้องอธิบาย ไม่ใช่การ์ดเปล่า
+const CE = "Ucatempty000000000000000000001";
+L.ensureUser(CE, "C"); L.grantConsent(CE);
+L.recordEntry(CE, { direction: "in", amountCents: 5000, note: "เงินเดือน" });
+assert.equal(L.categoryTotals(CE).length, 0);
+const empty = JSON.stringify(categoryPickerBubble(L.categoryTotals(CE), fromCents));
+assert.ok(empty.includes("ยังไม่มีรายจ่าย"), "ต้องบอกว่าทำไมถึงว่าง");
+assert.ok(empty.includes('"act=list"'), "ต้องมีทางถอยกลับ");
+ok("ไม่มีรายจ่าย → การ์ดอธิบายเหตุผล ไม่ใช่หน้าว่าง");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);
