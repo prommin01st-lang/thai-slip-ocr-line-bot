@@ -182,9 +182,14 @@ function announceMode() {
   if (!forced && !TABBED && (TAB1 || TAB2)) {
     console.log(`  (เจอรูปแท็บแค่หน้าเดียว — ${TAB1 ? "ขาด tab2" : "ขาด tab1"} จึงยังไม่เข้าโหมดแท็บ)`);
   }
-  if (!forced && TABBED && !PAGES.every((p) => isCustom(p.image)) && isCustom(FLAT)) {
-    console.log("  !! กำลังใช้รูปสำรองที่สคริปต์วาด ทั้งที่มีรูปที่ออกแบบเองรออยู่");
-    console.log(`     (${FLAT.split("/assets/")[1]}) — ใช้รูปนั้นแทนด้วย: create --flat`);
+  if (forced || !TABBED) return;
+  const placeholder = PAGES.filter((p) => !isCustom(p.image))
+    .map((p) => p.image.split("/assets/")[1]);
+  if (!placeholder.length) return;
+  console.log(`  !! ยังใช้รูปสำรองที่สคริปต์วาด: ${placeholder.join(", ")}`);
+  if (isCustom(FLAT)) {
+    console.log(`     มีรูปที่ออกแบบเองของโหมดหน้าเดียวรออยู่ (${FLAT.split("/assets/")[1]})`);
+    console.log("     ถ้าจะใช้อันนั้นก่อน: create --flat");
   }
 }
 
