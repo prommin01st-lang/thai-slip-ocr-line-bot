@@ -14,7 +14,8 @@ import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
 import { take } from "./ratelimit.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
-         summaryBubble, txnListBubble, categoryButtons, shiftMonth } from "./flex.js";
+         summaryBubble, txnListBubble, categoryButtons, categoryFilterButtons,
+         shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseEntry } from "./nlu.js";
 import { nowLocal } from "./db.js";
@@ -332,6 +333,38 @@ async function handleImage(event) {
   }
 }
 
+// ---------- รายการ ----------
+
+const LIST_LIMIT = 8;
+
+/**
+ * การ์ด "รายการ" พร้อมตัวกรอง — รับพารามิเตอร์เดียวกันทั้งจากปุ่มและจากข้อความ
+ *   d = in|out           กรองรายรับ/รายจ่าย
+ *   c = <ชื่อหมวด> | "-"  กรองหมวด ("-" = ยังไม่จัดหมวด)
+ */
+export function listMessage(userId, { d, c } = {}) {
+  // ค่าจาก postback ผู้ใช้ปลอมได้ — รับเฉพาะที่รู้จัก ไม่งั้นตัวกรองที่ไม่มีจริง
+  // จะให้ผลลัพธ์ว่างเปล่าแล้วดูเหมือนข้อมูลหาย
+  const dir = d === "in" || d === "out" ? d : null;
+  const cat = c === "-" || isCategory(c) ? c : null;
+  const f = { direction: dir, category: cat };
+  return txnListBubble(L.recentTxns(userId, LIST_LIMIT, f), L.fromCents,
+                       { dir, cat, total: L.countTxns(userId, f) });
+}
+
+/**
+ * แปลง "รายการรายจ่าย" / "รายการ อาหาร" เป็นตัวกรอง
+ * คืน null = คำที่ตามหลังไม่ใช่ตัวกรองที่รู้จัก → อย่าถือว่าเป็นคำสั่งรายการ
+ * ปล่อยให้ตกไปให้ NLU จัดการ ไม่งั้นข้อความอย่าง "รายการนี้ผิด" จะถูกกลืน
+ */
+function listArgs(word) {
+  if (!word) return {};
+  if (/^(รายรับ|เข้า|in)$/i.test(word)) return { d: "in" };
+  if (/^(รายจ่าย|ออก|out)$/i.test(word)) return { d: "out" };
+  if (isCategory(word)) return { c: word };
+  return null;
+}
+
 // ---------- สรุป ----------
 
 // export เพื่อให้เทสเรียกตรงได้ — การ์ด "ไม่มีรายการ" เคยกลืนยอดที่อยู่นอกช่วงมาแล้ว
@@ -447,7 +480,22 @@ async function handlePostback(event) {
     L.setPref(userId, "weekly", on ? "off" : "on");
     return respond(event, settingsCard(userId));
   }
-  if (act === "list") return respond(event, txnListBubble(L.recentTxns(userId, 8), L.fromCents));
+  if (act === "list") {
+    return respond(event, listMessage(userId, { d: p.get("d"), c: p.get("c") }));
+  }
+  if (act === "listcat") {
+    return respond(event, card({
+      title: "กรองตามหมวด", emoji: "📂", tone: "info",
+      text: "เลือกหมวดที่อยากดู",
+      actions: [
+        ...categoryFilterButtons(),
+        // รายการที่ยังไม่มีหมวดคือของที่รอจัด — ต้องหาเจอ ไม่งั้นไม่มีทางไล่เก็บให้ครบ
+        { label: "🏷 ยังไม่จัดหมวด", data: "act=list&c=-" },
+        { label: "🧾 ดูทั้งหมด", data: "act=list", primary: true },
+      ],
+      altText: "เลือกหมวดที่อยากกรองดู",
+    }));
+  }
 
   // --- หมวดหมู่ ---
   if (act === "cat") {
@@ -646,9 +694,14 @@ async function handleText(event) {
     if (!L.hasConsent(userId)) return respond(event, consentCard());
     return respond(event, summaryMessage(userId, "week"));
   }
-  if (/^(รายการ|รายการล่าสุด|list)$/i.test(text)) {
-    if (!L.hasConsent(userId)) return respond(event, consentCard());
-    return respond(event, txnListBubble(L.recentTxns(userId, 8), L.fromCents));
+  // "รายการ" เฉย ๆ หรือ "รายการรายจ่าย" / "รายการ อาหาร" — พิมพ์กรองได้เลยไม่ต้องกดสองที
+  const lm = /^(?:รายการ(?:ล่าสุด)?|list)\s*(\S*)$/i.exec(text);
+  if (lm) {
+    const a = listArgs(lm[1]);
+    if (a) {
+      if (!L.hasConsent(userId)) return respond(event, consentCard());
+      return respond(event, listMessage(userId, a));
+    }
   }
 
   // --- แก้ / ลบ ---

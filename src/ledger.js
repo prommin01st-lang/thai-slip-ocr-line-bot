@@ -380,15 +380,42 @@ export function fullRange(userId) {
 
 // ---------- แก้/ลบรายการย้อนหลัง ----------
 
-/** รายการล่าสุด N รายการ (ใหม่ก่อน) — ใช้ให้ผู้ใช้เลือกแก้/ลบ */
-export function recentTxns(userId, limit = 10) {
+/**
+ * เงื่อนไข WHERE ร่วมของ "รายการ" — ใช้ทั้งตอนดึงและตอนนับ
+ * แยกออกมาเพื่อไม่ให้สองที่หลุดจากกัน (นับได้ 5 แต่แสดง 3 คือบั๊กที่หาสาเหตุยาก)
+ */
+function txnFilter(userId, { direction, category } = {}) {
+  const where = ["t.line_user_id = ?", "t.status != 'rejected'"];
+  const args = [userId];
+  if (direction === "in" || direction === "out" || direction === "unknown") {
+    where.push("t.direction = ?");
+    args.push(direction);
+  }
+  // "-" = ยังไม่ได้จัดหมวด — ต้องกรองได้ ไม่งั้นหารายการที่ค้างรอจัดหมวดไม่เจอเลย
+  if (category === "-") where.push("t.category IS NULL");
+  else if (category) { where.push("t.category = ?"); args.push(category); }
+  return { sql: where.join(" AND "), args };
+}
+
+/** รายการล่าสุด N รายการ (ใหม่ก่อน) — ใช้ให้ผู้ใช้เลือกแก้/ลบ/กรอง */
+export function recentTxns(userId, limit = 10, filter = {}) {
+  const f = txnFilter(userId, filter);
   return db().prepare(`
     SELECT t.id, t.direction, t.amount_cents, t.occurred_at, t.counterparty,
            t.category, t.note, t.source, t.status, s.ref
     FROM txns t LEFT JOIN slips s ON s.txn_id = t.id
-    WHERE t.line_user_id = ? AND t.status != 'rejected'
+    WHERE ${f.sql}
     ORDER BY COALESCE(t.occurred_at, t.created_at) DESC, t.id DESC
-    LIMIT ?`).all(userId, limit);
+    LIMIT ?`).all(...f.args, limit);
+}
+
+/**
+ * จำนวนรายการทั้งหมดที่ตรงตัวกรอง — การ์ดโชว์ได้แค่ 8 แถว
+ * ถ้าไม่บอกจำนวนจริง ผู้ใช้จะเข้าใจว่ามีอยู่เท่าที่เห็นแล้วสรุปผิด
+ */
+export function countTxns(userId, filter = {}) {
+  const f = txnFilter(userId, filter);
+  return db().prepare(`SELECT COUNT(*) n FROM txns t WHERE ${f.sql}`).get(...f.args).n;
 }
 
 export function getTxn(userId, txnId) {

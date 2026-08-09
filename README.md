@@ -59,6 +59,8 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
 - Type `กาแฟ 60` in chat to log an expense — rule-based, no model needed
 - Expenses are auto-categorised from a Thai keyword dictionary, and every category
   is one tap to change from the transaction list — corrections are remembered
+- The transaction list filters by income/expense, by category, or by "not yet
+  categorised", and says how many rows it is hiding rather than silently truncating
 
 **Privacy (Thailand PDPA)**
 - Explicit consent required before anything is stored
@@ -141,7 +143,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 98 tests.
+(`ocr/`), covered by 107 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -172,8 +174,9 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           98 tests, no network or GPU required — `npm test`
-scripts/        Rich menu builder, weekly digest cron, OCR sync
+test/           107 tests, no network or GPU required — `npm test`
+scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
+assets/         Rich menu image + RICHMENU-SPEC.md (spec for redesigning it)
 ```
 
 The parsers in `ocr/` are **plain Python stdlib** (`re`, `json`, `difflib`) — you can
@@ -184,7 +187,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 98 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 107 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real

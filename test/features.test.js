@@ -551,7 +551,6 @@ assert.ok(listJson.includes(`act=catpick&id=${ce1.txnId}`),
   "รายจ่ายต้องมีปุ่มเปลี่ยนหมวดในรายการ");
 assert.ok(!listJson.includes(`act=catpick&id=${ce2.txnId}`),
   "รายรับไม่ควรมีปุ่มหมวด — หมวดมีไว้คุมรายจ่าย");
-assert.ok(listJson.includes("เปลี่ยนหมวด"), "มีหมวดอยู่แล้ว → ป้ายต้องเป็น ‘เปลี่ยนหมวด’");
 ok("รายการล่าสุดมีปุ่มแก้หมวด (เฉพาะรายจ่าย)");
 
 // แก้แล้วต้องเปลี่ยนจริง และจำไว้ใช้ครั้งหน้า
@@ -562,11 +561,81 @@ const ce3 = L.recordEntry(E2, { direction: "out", amountCents: 8000, note: "ก�
 assert.equal(L.getTxn(E2, ce3.txnId).category, "บันเทิง", "ที่แก้ไว้ต้องถูกใช้กับรายการถัดไป");
 ok("แก้หมวดย้อนหลัง → เปลี่ยนจริง ยอดไม่กระทบ และจำไว้ใช้ครั้งหน้า");
 
-// รายการที่ยังไม่มีหมวดเลย → ป้ายต้องเป็น "จัดหมวด" ไม่ใช่ "เปลี่ยนหมวด"
+// ยังไม่มีหมวด → ปุ่มต้องเป็นสีเหลืองให้เห็นว่ายังค้าง
+// ป้ายข้อความบอกไม่ได้แล้วเพราะปุ่มเหลือแต่ไอคอน สีจึงเป็นตัวเดียวที่สื่อ
 const ce4 = L.recordEntry(E2, { direction: "out", amountCents: 9900, note: "อะไรก็ไม่รู้" });
 assert.equal(L.getTxn(E2, ce4.txnId).category, null, "คำที่ไม่รู้จักต้องไม่เดามั่ว");
-assert.ok(JSON.stringify(txnListBubble([L.getTxn(E2, ce4.txnId)], fromCents)).includes("จัดหมวด"),
-  "ยังไม่มีหมวด → ป้ายต้องเป็น ‘จัดหมวด’");
-ok("ป้ายปุ่มเปลี่ยนตามว่ามีหมวดอยู่แล้วหรือยัง");
+const chipBgOf = (txn) => {
+  const b = txnListBubble([txn], fromCents).contents.body.contents
+    .find((c) => c.type === "box").contents[1].contents[1].contents
+    .find((x) => x.contents?.[0]?.text === "📂");
+  return b?.backgroundColor;
+};
+assert.equal(chipBgOf(L.getTxn(E2, ce4.txnId)), "#FBF0DA", "ยังไม่มีหมวด → ปุ่มสีเหลือง");
+assert.equal(chipBgOf(L.getTxn(E2, ce1.txnId)), "#F0EDE8", "มีหมวดแล้ว → ปุ่มสีปกติ");
+ok("ปุ่มหมวดเป็นสีเหลืองเมื่อยังไม่ได้จัดหมวด");
+
+// --- ปุ่มท้ายแถว + กรองรายการ ---
+//
+// ก่อนหน้านี้ปุ่มเป็น `button` มีป้ายข้อความ วาง 3 อันแล้วโดนตัดเหลือ "✏️ แ…" / "📂 เป…"
+// เปลี่ยนเป็น box ไอคอนท้ายแถวแทน — ทุกแถวต้องมี 3 ช่องเท่ากันเพื่อให้ไอคอนตรงคอลัมน์
+const F = "Ufilter00000000000000000000001";
+L.ensureUser(F, "F"); L.grantConsent(F);
+const f1 = L.recordEntry(F, { direction: "out", amountCents: 12000, note: "กาแฟ" });      // อาหาร
+const f2 = L.recordEntry(F, { direction: "out", amountCents: 25000, note: "แท็กซี่" });   // เดินทาง
+const f3 = L.recordEntry(F, { direction: "in", amountCents: 500000, note: "เงินเดือน" });
+const f4 = L.recordEntry(F, { direction: "out", amountCents: 7700, note: "จิปาถะ" });     // ไม่มีหมวด
+
+const rowBoxes = (bubble) => bubble.contents.body.contents.filter((c) => c.type === "box");
+const allRows = rowBoxes(txnListBubble(L.recentTxns(F, 10), fromCents));
+assert.equal(allRows.length, 4, "ต้องเห็นครบ 4 รายการ");
+for (const r of allRows) {
+  assert.equal(r.contents[1].contents[1].contents.length, 3,
+    "ทุกแถวต้องมีปุ่ม 3 ช่อง (เติม filler ถ้าใช้ไม่ครบ) ไอคอนจะได้ตรงคอลัมน์กัน");
+}
+// ไม่มี `button` ในตัวรายการอีกแล้ว — ป้ายที่ถูกตัดคือเหตุผลที่เปลี่ยน
+assert.ok(!JSON.stringify(allRows).includes('"type":"button"'),
+  "ปุ่มในแถวต้องเป็น box ไม่ใช่ button (button padding เยอะจนป้ายโดนตัด)");
+ok("ปุ่มย้ายไปท้ายแถวเป็นไอคอน 3 ช่องเท่ากันทุกแถว");
+
+assert.equal(L.recentTxns(F, 10, { direction: "out" }).length, 3, "กรองรายจ่ายได้ 3");
+assert.equal(L.recentTxns(F, 10, { direction: "in" }).length, 1, "กรองรายรับได้ 1");
+assert.equal(L.recentTxns(F, 10, { category: "อาหาร" })[0].id, f1.txnId, "กรองตามหมวดได้");
+assert.equal(L.recentTxns(F, 10, { category: "-" })[0].id, f4.txnId, "กรอง ‘ยังไม่จัดหมวด’ ได้");
+assert.equal(L.countTxns(F), 4, "นับทั้งหมดได้");
+assert.equal(L.countTxns(F, { direction: "out" }), 3, "นับตามตัวกรองได้");
+ok("กรองรายการตามรับ/จ่าย · ตามหมวด · เฉพาะที่ยังไม่จัดหมวด");
+
+// ลบแล้วต้องหายจากทั้งรายการและตัวนับ — ไม่งั้นจะขึ้น "แสดง 3 จาก 4" ทั้งที่เหลือ 3
+L.deleteTxn(F, f3.txnId);
+assert.equal(L.countTxns(F), 3, "ลบแล้วตัวนับต้องลด");
+assert.equal(L.countTxns(F, { direction: "in" }), 0, "รายรับที่ลบไปต้องไม่ถูกนับ");
+ok("ตัวนับกับรายการใช้เงื่อนไขเดียวกัน — ลบแล้วตรงกันทั้งคู่");
+
+// กรองแล้วไม่เจอ ≠ ยังไม่เคยบันทึกอะไร — ต้องมีทางถอยกลับเสมอ ไม่ใช่การ์ดสอนใช้งาน
+const emptyFiltered = txnListBubble([], fromCents, { cat: "สุขภาพ" });
+const ejson = JSON.stringify(emptyFiltered);
+assert.ok(ejson.includes("ไม่พบรายการ"), "ต้องบอกว่าไม่พบ ไม่ใช่ ‘ยังไม่มีรายการ’");
+assert.ok(ejson.includes('"act=list"'), "ต้องมีปุ่มถอยกลับไปดูทั้งหมด");
+assert.ok(!ejson.includes("ส่งรูปสลิปเข้ามา"), "อย่าโชว์การ์ดสอนใช้งาน — ผู้ใช้มีข้อมูลอยู่แล้ว");
+// ไม่ได้กรอง + ไม่มีข้อมูลจริง → อันนี้ค่อยสอนใช้งาน
+assert.ok(JSON.stringify(txnListBubble([], fromCents)).includes("ยังไม่มีรายการ"),
+  "ไม่มีข้อมูลจริง ๆ ต้องได้การ์ดเริ่มต้นใช้งาน");
+ok("กรองแล้วว่าง ≠ ยังไม่มีข้อมูล — การ์ดคนละใบและมีทางถอยกลับ");
+
+// การ์ดต้องบอกตรง ๆ ว่าที่เห็นเป็นแค่บางส่วน ไม่งั้นผู้ใช้นึกว่ามีเท่านี้
+const capped = txnListBubble(L.recentTxns(F, 2), fromCents, { total: L.countTxns(F) });
+assert.ok(JSON.stringify(capped).includes("แสดง 2 จาก 3 รายการ"),
+  "แสดงไม่ครบต้องบอกจำนวนจริง");
+assert.ok(!JSON.stringify(txnListBubble(L.recentTxns(F, 10), fromCents,
+  { total: L.countTxns(F) })).includes("แสดง 3 จาก"), "ครบแล้วไม่ต้องบอก");
+ok("บอกจำนวนจริงเมื่อการ์ดแสดงไม่ครบ");
+
+// หัวการ์ดกับ altText ต้องบอกว่ากรองอะไรอยู่ — altText คือสิ่งเดียวที่เห็นบนหน้าจอล็อก
+const filtered = txnListBubble(L.recentTxns(F, 10, { direction: "out" }), fromCents,
+                               { dir: "out", total: 3 });
+assert.ok(filtered.contents.header.contents[0].text.includes("รายจ่าย"), "หัวการ์ดต้องบอกตัวกรอง");
+assert.ok(filtered.altText.includes("รายจ่าย"), "altText ต้องบอกตัวกรอง");
+ok("หัวการ์ดและ altText บอกว่ากำลังกรองอะไรอยู่");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

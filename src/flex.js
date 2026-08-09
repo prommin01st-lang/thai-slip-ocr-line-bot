@@ -530,9 +530,60 @@ export function summaryBubble(s, fromCents) {
 
 const DIR_ICON = { in: "💰", out: "💸", unknown: "❓" };
 
-/** รายการล่าสุดพร้อมปุ่มลบต่อแถว */
-export function txnListBubble(rows, fromCents) {
+/**
+ * ปุ่มไอคอนท้ายแถว — เป็น `box` ที่มี action ไม่ใช่ `button`
+ *
+ * `button` มี padding ในตัวเยอะ พอวาง 3 อันในความกว้างการ์ด (~260px) ป้ายจะถูกตัด
+ * เหลือ "✏️ แ…" / "📂 เป…" อ่านไม่รู้เรื่อง — ใช้ไอคอนล้วนแล้วอธิบายที่หัวการ์ดครั้งเดียว
+ * คุ้มกว่า ทั้งอ่านง่ายกว่าและการ์ดสั้นลงแถวละบรรทัด
+ */
+const CHIP_BG = "#F0EDE8", CHIP_TODO = "#FBF0DA";   // TODO = สีเหลืองอ่อน "ยังไม่ได้ทำ"
+const chip = (icon, action, bg = CHIP_BG) => ({
+  type: "box", layout: "vertical", cornerRadius: "8px", backgroundColor: bg,
+  paddingAll: "6px", action,
+  contents: [{ type: "text", text: icon, size: "sm", align: "center", color: "#5A5A5A" }],
+});
+
+/** ป้ายบอกว่ากรองอะไรอยู่ — null = ไม่ได้กรอง */
+function filterLabel({ dir, cat } = {}) {
+  const parts = [];
+  if (dir === "out") parts.push("💸 รายจ่าย");
+  else if (dir === "in") parts.push("💰 รายรับ");
+  if (cat === "-") parts.push("🏷 ยังไม่จัดหมวด");
+  else if (cat) parts.push(labelOf(cat));
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/** ปุ่มเลือกหมวดสำหรับ "กรองรายการ" — ต่างจาก categoryButtons ตรงที่ไม่ผูกกับ txn ใด */
+export function categoryFilterButtons() {
+  const btn = (c) => ({ label: `${c.emoji} ${c.key}`, data: `act=list&c=${encodeURIComponent(c.key)}` });
+  const rows = [];
+  for (let i = 0; i < CATEGORIES.length; i += 2) rows.push(CATEGORIES.slice(i, i + 2).map(btn));
+  return rows;
+}
+
+/**
+ * รายการล่าสุดพร้อมปุ่มจัดการต่อแถว
+ * `filter` = { dir, cat, total } — total คือจำนวนที่ตรงตัวกรองทั้งหมด (ไม่ใช่แค่ที่แสดง)
+ */
+export function txnListBubble(rows, fromCents, filter = {}) {
+  const active = filterLabel(filter);
+
   if (!rows.length) {
+    // กรองแล้วไม่เจอ ≠ ยังไม่เคยบันทึกอะไร — ถ้าโชว์การ์ดสอนใช้งานจะกลายเป็นทางตัน
+    // ผู้ใช้ต้องมีปุ่มถอยกลับไปดูทั้งหมดเสมอ
+    if (active) {
+      return card({
+        title: "ไม่พบรายการที่ตรงกับตัวกรอง", emoji: "🔍", tone: "info",
+        rows: [{ label: "กรองอยู่", value: active }],
+        text: "ลองเอาตัวกรองออก หรือเปลี่ยนไปดูหมวดอื่นครับ",
+        actions: [
+          { label: "🧾 ดูทั้งหมด", data: "act=list", primary: true },
+          { label: "📂 เลือกหมวดอื่น", data: "act=listcat" },
+        ],
+        altText: `ไม่พบรายการที่ตรงกับ ${active}`,
+      });
+    }
     return card({
       title: "ยังไม่มีรายการ", emoji: "🧾", tone: "info",
       text: "ส่งรูปสลิปเข้ามา หรือพิมพ์รายการเองก็ได้ครับ",
@@ -544,74 +595,107 @@ export function txnListBubble(rows, fromCents) {
       altText: "ยังไม่มีรายการ — ส่งสลิปหรือพิมพ์ “กาแฟ 60” ได้เลย",
     });
   }
-  const items = rows.map((t) => ({
-    type: "box", layout: "vertical", margin: "md", spacing: "xs",
-    contents: [
-      {
-        type: "box", layout: "baseline", contents: [
-          { type: "text", text: `${DIR_ICON[t.direction] ?? "•"} #${t.id}`, size: "xs",
-            color: "#8A8A8A", flex: 3 },
-          { type: "text", text: `${fromCents(t.amount_cents)} ฿`, size: "sm", weight: "bold",
-            align: "end", color: t.direction === "in" ? "#2E7D5B" : "#1F1F1F", flex: 4 },
-        ],
-      },
-      {
-        type: "text",
-        text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty, labelOf(t.category)]
-          .filter(Boolean).join(" · ") || "—",
-        size: "xxs", color: "#B0B0B0", wrap: true,
-      },
-      {
-        // ปุ่มต่อแถว — ทุกอย่างกดได้ ไม่ต้องพิมพ์เลขรายการเอง
-        // "แก้ยอด" ใช้ fillInText เติม "แก้ 12 " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
-        type: "box", layout: "horizontal", spacing: "sm", margin: "sm",
-        contents: [
-          { type: "button", style: "link", height: "sm",
-            action: { type: "postback", label: "🗑 ลบ", data: `act=del&id=${t.id}` } },
-          { type: "button", style: "link", height: "sm",
-            action: { type: "postback", label: "✏️ แก้ยอด",
-                      data: `act=prompt&kind=edit&id=${t.id}`,
-                      inputOption: "openKeyboard", fillInText: `แก้ ${t.id} ` } },
-          // แก้หมวดย้อนหลัง — หมวดถูกเดาให้ตอนบันทึก ถ้าเดาผิดหรือยังไม่ได้จัด
-          // ต้องแก้จากตรงนี้ได้ ไม่งั้นต้องลบทิ้งแล้วบันทึกใหม่
-          // มีเฉพาะรายจ่าย เพราะหมวดมีไว้คุมงบ/ดูว่าใช้อะไรมากสุด
-          ...(t.direction === "out" ? [
-            { type: "button", style: "link", height: "sm",
-              action: { type: "postback",
-                        label: t.category ? "📂 เปลี่ยนหมวด" : "📂 จัดหมวด",
-                        data: `act=catpick&id=${t.id}` } },
-          ] : []),
-          ...(t.direction === "unknown" ? [
-            { type: "button", style: "link", height: "sm",
-              action: { type: "postback", label: "รับ/จ่าย?", data: `act=askdir&id=${t.id}` } },
-          ] : []),
-        ],
-      },
-      { type: "separator" },
-    ],
-  }));
+
+  const items = rows.map((t) => {
+    // ปุ่ม 3 ช่องเสมอ แถวที่ใช้ไม่ครบเติม filler — ไอคอนทุกแถวจะได้ตรงคอลัมน์กัน
+    const acts = [
+      chip("🗑", { type: "postback", label: "ลบ", data: `act=del&id=${t.id}` }),
+      // "แก้ยอด" ใช้ fillInText เติม "แก้ 12 " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
+      chip("✏️", { type: "postback", label: "แก้ยอด", data: `act=prompt&kind=edit&id=${t.id}`,
+                   inputOption: "openKeyboard", fillInText: `แก้ ${t.id} ` }),
+    ];
+    // แก้หมวดย้อนหลัง — หมวดถูกเดาให้ตอนบันทึก ถ้าเดาผิดหรือยังไม่ได้จัดต้องแก้จากตรงนี้ได้
+    // มีเฉพาะรายจ่าย เพราะหมวดมีไว้คุมงบ/ดูว่าใช้อะไรมากสุด
+    // ยังไม่มีหมวด → ปุ่มเป็นสีเหลือง สะดุดตาว่ายังค้างอยู่
+    // (ป้ายข้อความ "จัดหมวด/เปลี่ยนหมวด" ใช้ไม่ได้แล้วเพราะเหลือแต่ไอคอน)
+    if (t.direction === "out") {
+      acts.push(chip("📂", { type: "postback", label: "หมวด", data: `act=catpick&id=${t.id}` },
+                     t.category ? CHIP_BG : CHIP_TODO));
+    } else if (t.direction === "unknown") {
+      acts.push(chip("↕️", { type: "postback", label: "รับหรือจ่าย", data: `act=askdir&id=${t.id}` },
+                     CHIP_TODO));
+    } else {
+      acts.push({ type: "filler" });
+    }
+
+    return {
+      type: "box", layout: "vertical", margin: "md", spacing: "xs",
+      contents: [
+        {
+          type: "box", layout: "baseline", contents: [
+            { type: "text", text: `${DIR_ICON[t.direction] ?? "•"} #${t.id}`, size: "xs",
+              color: "#8A8A8A", flex: 3 },
+            { type: "text", text: `${fromCents(t.amount_cents)} ฿`, size: "sm", weight: "bold",
+              align: "end", color: t.direction === "in" ? "#2E7D5B" : "#1F1F1F", flex: 4 },
+          ],
+        },
+        {
+          // รายละเอียดกับปุ่มอยู่บรรทัดเดียวกัน ปุ่มชิดขวาท้ายรายการ
+          type: "box", layout: "horizontal", spacing: "xs", contents: [
+            {
+              type: "text", flex: 6, gravity: "center", size: "xxs", color: "#B0B0B0", wrap: true,
+              text: [t.occurred_at?.slice(0, 16), t.note || t.counterparty, labelOf(t.category)]
+                .filter(Boolean).join(" · ") || "—",
+            },
+            { type: "box", layout: "horizontal", flex: 5, spacing: "xs", contents: acts },
+          ],
+        },
+        { type: "separator", margin: "md" },
+      ],
+    };
+  });
+
+  // อธิบายไอคอนครั้งเดียวที่หัวการ์ด — โชว์เฉพาะไอคอนที่มีจริงในชุดนี้
+  const legend = ["🗑 ลบ", "✏️ แก้ยอด",
+    rows.some((t) => t.direction === "out") ? "📂 หมวด" : null,
+    rows.some((t) => t.direction === "unknown") ? "↕️ รับ/จ่าย" : null,
+  ].filter(Boolean).join(" · ");
+
+  const fbtn = (label, data, on) => ({
+    type: "button", height: "sm", style: on ? "primary" : "secondary",
+    ...(on ? { color: "#2E5B7D" } : {}),
+    action: { type: "postback", label, data },
+  });
+  const noFilter = !filter.dir && !filter.cat;
 
   return {
     type: "flex",
-    altText: `รายการล่าสุด ${rows.length} รายการ`,
+    altText: active
+      ? `รายการ ${active} — ${rows.length} รายการ`
+      : `รายการล่าสุด ${rows.length} รายการ`,
     contents: {
       type: "bubble",
       header: {
         type: "box", layout: "horizontal", backgroundColor: "#F7F5F2", paddingAll: "md",
-        contents: [{ type: "text", text: "🧾 รายการล่าสุด", weight: "bold", size: "sm" }],
+        contents: [{ type: "text", weight: "bold", size: "sm", wrap: true,
+                     text: active ? `🧾 รายการ · ${active}` : "🧾 รายการล่าสุด" }],
       },
       body: {
         type: "box", layout: "vertical", paddingAll: "lg",
         contents: [
-          { type: "text", text: "ทุกอย่างกดได้ — ไม่ต้องพิมพ์เลขรายการเอง",
-            size: "xxs", color: "#8A8A8A", wrap: true },
+          { type: "text", text: legend, size: "xxs", color: "#8A8A8A", wrap: true },
+          // บอกตรง ๆ ว่าที่เห็นเป็นแค่บางส่วน ไม่งั้นผู้ใช้นึกว่ามีอยู่เท่านี้แล้วสรุปผิด
+          ...(filter.total > rows.length
+            ? [{ type: "text", text: `แสดง ${rows.length} จาก ${filter.total} รายการ`,
+                 size: "xxs", color: "#B0B0B0", margin: "xs" }]
+            : []),
           ...items,
         ],
       },
       footer: {
         type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
-        contents: [{ type: "button", height: "sm", style: "secondary",
-                     action: { type: "postback", label: "📊 ดูสรุป", data: "act=summary" } }],
+        contents: [
+          { type: "box", layout: "horizontal", spacing: "sm", contents: [
+              fbtn("💸 รายจ่าย", "act=list&d=out", filter.dir === "out"),
+              fbtn("💰 รายรับ", "act=list&d=in", filter.dir === "in"),
+            ] },
+          { type: "box", layout: "horizontal", spacing: "sm", contents: [
+              fbtn("🧾 ทั้งหมด", "act=list", noFilter),
+              fbtn("📂 ตามหมวด", "act=listcat", !!filter.cat),
+            ] },
+          { type: "button", height: "sm", style: "link",
+            action: { type: "postback", label: "📊 ดูสรุป", data: "act=summary" } },
+        ],
       },
     },
   };
