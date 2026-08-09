@@ -102,16 +102,27 @@ def prep_icon(path):
 
 
 def brings_own_background(ic):
-    """ไอคอนมีพื้นหลังของตัวเองแล้วหรือยัง — ถ้ามี อย่าวาดวงพาสเทลซ้อนให้ซ้ำซ้อน
+    """ไอคอนมีวงพื้นหลังของตัวเองแล้วหรือยัง — ถ้ามี อย่าวาดวงพาสเทลซ้อนให้ซ้ำซ้อน
 
-    (ไอคอนที่ตัดมาจากงานออกแบบมักติดวงกลมพาสเทลของตัวเองมาด้วย
-    วาดวงของเราทับอีกชั้นจะกลายเป็นวงซ้อนวงคนละสี)
+    วัดสัดส่วนพิกเซลทึบ **ภายในวงกลมกลางภาพ** ไม่ใช่ทั้งกรอบ
+    เพราะไอคอนพวกนี้มี sparkle กระจายอยู่ไกลจากตัววง ทำให้กรอบหลังครอปใหญ่กว่าวงจริง
+    ถ้าวัดทั้งกรอบจะได้แค่ 43-67% แยกไม่ออก แต่วัดในวงได้ 62-100% ซึ่งแยกออกชัด
+
+    บังคับได้ด้วย RICHMENU_HALO=on|off เผื่อฮิวริสติกเดาพลาด
     """
-    if ic.mode != "RGBA":
+    force = os.environ.get("RICHMENU_HALO", "auto")
+    if force == "on":
+        return False
+    if force == "off" or ic.mode != "RGBA":
         return True                       # ทึบทั้งแผ่น = มีพื้นของตัวเองแน่นอน
-    a = ic.getchannel("A")
+
+    w, h = ic.size
+    r = min(w, h) * 0.45
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).ellipse([w / 2 - r, h / 2 - r, w / 2 + r, h / 2 + r], fill=255)
+    inside = ImageChops.multiply(ic.getchannel("A"), mask)
     # histogram เร็วกว่าไล่ทีละพิกเซล และไม่ต้องพึ่ง API ที่ Pillow กำลังจะเลิกใช้
-    return sum(a.histogram()[201:]) > 0.55 * ic.width * ic.height
+    return sum(inside.histogram()[201:]) > 0.55 * sum(mask.histogram()[201:])
 
 
 def compose(page, cells, fonts, f_tab):
