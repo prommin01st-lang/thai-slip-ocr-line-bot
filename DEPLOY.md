@@ -466,12 +466,20 @@ ss -ltnp | grep -E ':3000|:8101'
 ```bash
 cd ~/slipingman
 git pull
-docker compose up -d --build        # ⚠️ ต้องรัน — pull เฉย ๆ ไม่มีผล
+docker compose up -d --build bot    # ⚠️ ต้องรัน — pull เฉย ๆ ไม่มีผล
 git log --oneline -1 && curl -s localhost:3000/health
 ```
 
 โค้ดถูกคัดลอกเข้า image ตอน build **container ที่รันอยู่ไม่ได้อ่านไฟล์จากดิสก์**
 `git pull` อย่างเดียวจึงไม่เปลี่ยนอะไรเลย — เป็นกับดักที่ทำให้ "แก้แล้วแต่ไม่เปลี่ยน"
+
+ใส่ `bot` ต่อท้ายเมื่อการอัปเดตแตะแค่ `src/` — จะได้ไม่ไปแตะ image ของ `ocr`
+ที่ใหญ่ 2.27 GB ซึ่งบน VPS 2 core ต่างกันเป็นนาที
+**ถ้าใน pull มีของใน `ocr/` เปลี่ยนด้วย ให้ตัด `bot` ออก** แล้ว build ทั้งสอง service
+
+> เมนูล่าง (rich menu) **ไม่เกี่ยวกับขั้นตอนนี้** — มันอยู่บนเซิร์ฟเวอร์ของ LINE
+> อัปเดตด้วย `node scripts/richmenu.mjs create` จากเครื่องไหนก็ได้ที่มี token
+> (ดู `assets/RICHMENU-SPEC.md`)
 
 **ถ้า pull ขึ้น conflict** — deploy box ไม่ควรมีการแก้ไฟล์ ให้ทิ้งของฝั่ง VPS:
 ```bash
