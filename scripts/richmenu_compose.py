@@ -21,14 +21,17 @@
     tab1-1.png … tab1-6.png     หน้า "หลัก"
     tab2-1.png … tab2-6.png     หน้า "เพิ่มเติม"
 
-**PNG พื้นโปร่ง (alpha) ดีที่สุด** — ถ้าไม่โปร่งจะเห็นเป็นสี่เหลี่ยมทับวงกลมพาสเทล
+**PNG พื้นโปร่ง (alpha) ดีที่สุด** — แต่ถ้าเครื่องมือทำพื้นโปร่งไม่ได้ก็ไม่เป็นไร
+ขอแค่พื้นเป็น "สีเรียบสีเดียว" สคริปต์จะคีย์ออกให้เอง (ดู autokey)
 หน้าไหนไอคอนไม่ครบ 6 อันจะถูกข้าม (ไม่เขียนทับของเดิม)
+
+prompt สำเร็จรูปสำหรับสั่ง AI วาดไอคอน: assets/icons/PROMPT.md
 
 ต้องมี pillow (ใช้ venv ไหนก็ได้ เช่น bench/.venv-ocr/bin/python)
 """
 import os
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from richmenu_image import (ACCENT, ASSETS, BG, CELLS, CELLS_MORE, CH_TAB, CW, FG,  # noqa: F401
                             H, LINE, SUB, TAB_H, TAB_W, W, centered, check_glyphs,
@@ -60,10 +63,40 @@ def load_icon(page, idx):
     return None
 
 
+def autokey(rgb, tol=26):
+    """ไอคอนพื้นทึบ → คีย์สีพื้นออกเป็น alpha ให้อัตโนมัติ
+
+    เครื่องมือ AI วาดรูปหลายตัวส่งออก PNG พื้นโปร่งไม่ได้ ได้พื้นทึบมาแทน
+    วางทับตรง ๆ จะเห็นเป็นสี่เหลี่ยมกลางช่อง — คีย์ให้เองดีกว่าให้ไปแก้มือทีละอัน
+
+    ทำเฉพาะตอนสี่มุมเป็นสีเดียวกันจริง ๆ ถ้ามุมไม่เหมือนกัน = พื้นมีลวดลาย
+    เดามั่วแล้วจะกัดตัวไอคอนหาย เลยคืน None ให้ไปใช้แบบทึบตามเดิม
+    """
+    w, h = rgb.size
+    corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    for ch in range(3):
+        vals = [c[ch] for c in corners]
+        if max(vals) - min(vals) > 12:
+            return None
+    bg = tuple(sum(c[ch] for c in corners) // 4 for ch in range(3))
+
+    r, g, b = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg)).split()
+    dist = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    alpha = dist.point(lambda v: 0 if v <= tol else min(255, (v - tol) * 12))
+    out = rgb.convert("RGBA")
+    out.putalpha(alpha)
+    return out
+
+
 def prep_icon(path):
     """โหลด + ย่อให้พอดีกรอบ คงอัตราส่วนเดิม (ไอคอนไม่จัตุรัสก็ไม่บิด)"""
     ic = Image.open(path)
-    ic = ic.convert("RGBA") if ic.mode in ("RGBA", "LA", "P") else ic.convert("RGB")
+    if ic.mode in ("RGBA", "LA", "P"):
+        ic = ic.convert("RGBA")
+        if ic.getchannel("A").getextrema()[0] == 255:      # มี alpha แต่ทึบหมด
+            ic = autokey(ic.convert("RGB")) or ic
+    else:
+        ic = autokey(ic.convert("RGB")) or ic.convert("RGB")
     ic.thumbnail((ICON_BOX, ICON_BOX), Image.LANCZOS)
     return ic
 
