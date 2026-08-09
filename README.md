@@ -176,7 +176,7 @@ ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
 test/           107 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
-assets/         Rich menu image + RICHMENU-SPEC.md (spec for redesigning it)
+assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
 
 The parsers in `ocr/` are **plain Python stdlib** (`re`, `json`, `difflib`) — you can

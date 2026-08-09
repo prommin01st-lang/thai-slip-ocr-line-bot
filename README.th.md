@@ -115,7 +115,7 @@ ocr/            HTTP service ของ PaddleOCR + parser เอกสารไ�
 bench/          เครื่องมือวัดผล + บันทึกการวัดทั้งหมด
 test/           107 เทส ไม่ต้องใช้เน็ตหรือ GPU — `npm test`
 scripts/        สร้าง rich menu, cron สรุปรายสัปดาห์, sync ไฟล์ OCR, backup
-assets/         รูปเมนูล่าง + RICHMENU-SPEC.md (สเปกสำหรับออกแบบรูปใหม่)
+assets/         รูปเมนูล่าง (2 หน้า สลับด้วยแท็บ) + RICHMENU-SPEC.md
 ```
 
 parser ใน `ocr/` เป็น **Python stdlib ล้วน** (`re`, `json`, `difflib`) —
