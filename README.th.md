@@ -109,12 +109,55 @@ docker compose up -d --build
 src/            LINE bot — webhook, Flex card, สมุดบัญชี, NLU แบบ rule
 ocr/            HTTP service ของ PaddleOCR + parser เอกสารไทย (stdlib ล้วน)
 bench/          เครื่องมือวัดผล + บันทึกการวัดทั้งหมด
-test/           71 เทส ไม่ต้องใช้เน็ตหรือ GPU — `npm test`
+test/           98 เทส ไม่ต้องใช้เน็ตหรือ GPU — `npm test`
 scripts/        สร้าง rich menu, cron สรุปรายสัปดาห์, sync ไฟล์ OCR
 ```
 
 parser ใน `ocr/` เป็น **Python stdlib ล้วน** (`re`, `json`, `difflib`) —
 หยิบ `slip_parser.py` ไปใช้ในโปรเจกต์อื่นได้เลยโดยไม่ต้องลงอะไร
+
+---
+
+## Tech stack
+
+| ส่วน | ใช้อะไร |
+|---|---|
+| Runtime ฝั่งบอท | **Node.js 22+** · ESM — ไม่มี build step ไม่มี TypeScript ไม่มี bundler |
+| HTTP | **Express 5** |
+| LINE | **`@line/bot-sdk` 11** |
+| ฐานข้อมูล | **`node:sqlite`** — มากับ Node เอง ไม่ต้องคอมไพล์ native module |
+| Config | `dotenv` |
+| เทส | **`node:assert` + `node:test`** — ไม่มี jest ไม่มี vitest |
+| Runtime ฝั่ง OCR | **Python 3.12** |
+| OCR | **`paddleocr` 3.7** + `paddlepaddle` 3.3 (**CPU ล้วน ไม่มี torch ไม่มี CUDA**) |
+| HTTP server ฝั่ง OCR | **`http.server` ของ stdlib** — ไม่มี FastAPI ไม่มี Flask |
+| Parser เอกสาร | **`re` · `json` · `difflib`** — stdlib ล้วน |
+| รูปภาพ | Pillow |
+| Deploy | Docker Compose · `node:22-alpine` + `python:3.12-slim` |
+
+**ฝั่งบอทมี dependency แค่ 3 ตัว และ devDependencies เป็นศูนย์:**
+
+```json
+"@line/bot-sdk"   "express"   "dotenv"
+```
+
+### สิ่งที่ตั้งใจ "ไม่ใช้" — และใช้อะไรแทน
+
+| ไม่ใช้ | ใช้แทน |
+|---|---|
+| LLM / API เสียเงิน | regex + พจนานุกรม — `nlu.js` 92 บรรทัด · `categories.js` 120 บรรทัด |
+| Postgres / MySQL | SQLite ที่ฝังอยู่ในโปรเซสของแอปเอง |
+| ORM (Prisma, Drizzle) | SQL ดิบ + prepared statement |
+| Redis | `Map` ในหน่วยความจำ — `ratelimit.js` 63 บรรทัด |
+| TypeScript / bundler | JavaScript + JSDoc |
+| jest / vitest | `node:assert` |
+
+โค้ดที่เขียนเองจริง ๆ: **~3,000 บรรทัด JS** (`src/`) และ **~1,400 บรรทัด Python**
+(`ocr/`) มี 98 เทสคุมไว้
+
+**สิ่งที่แลกมาชัดเจน:** ความฉลาดด้านภาษาไทยทั้งหมดเป็นกฎที่เขียนมือ เจอรูปประโยคใหม่
+ก็ต้องเติมกฎใหม่ ไม่ใช่โมเดลที่วางนัยทั่วไปเองได้ แลกกับการที่ทั้งระบบตอบ webhook
+ใน ~3 ms กิน RAM 23 MB และไม่ต้องมี GPU — นิวรอลเน็ตเดียวในระบบคือโมเดล OCR ขนาด 7.8 MB
 
 ---
 

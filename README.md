@@ -101,8 +101,50 @@ Two containers, split by runtime:
 `ocr` publishes **no external port** — reachable only from `bot` over the compose
 network, optionally behind a shared token. Both containers run as non-root.
 
-**No LLM anywhere in the request path.** Parsing is regex, categorisation is a SQL
-lookup over the user's own history, chat input is rule-based.
+**No LLM anywhere in the request path.** Slip parsing is regex, categorisation is a
+Thai keyword dictionary plus what the user has taught it, chat input is rule-based.
+
+### Tech stack
+
+| Layer | Choice |
+|---|---|
+| Bot runtime | **Node.js 22+**, ESM — no build step, no TypeScript, no bundler |
+| HTTP | **Express 5** |
+| LINE | **`@line/bot-sdk` 11** |
+| Database | **`node:sqlite`** — ships with Node, no native module to compile |
+| Config | `dotenv` |
+| Tests | **`node:assert` + `node:test`** — no jest, no vitest |
+| OCR runtime | **Python 3.12** |
+| OCR engine | **`paddleocr` 3.7** + `paddlepaddle` 3.3 (**CPU only — no torch, no CUDA**) |
+| OCR HTTP server | **`http.server` from the standard library** — no FastAPI, no Flask |
+| Document parsers | **`re` · `json` · `difflib`** — standard library only |
+| Images | Pillow |
+| Deploy | Docker Compose · `node:22-alpine` + `python:3.12-slim` |
+
+**The bot has exactly three runtime dependencies and zero dev dependencies:**
+
+```json
+"@line/bot-sdk"   "express"   "dotenv"
+```
+
+Deliberately **not** used — and what replaces each:
+
+| Not used | Used instead |
+|---|---|
+| LLM / paid API | regex + dictionary — `nlu.js` is 92 lines, `categories.js` is 120 |
+| Postgres / MySQL | SQLite embedded in the app process |
+| ORM (Prisma, Drizzle) | plain SQL with prepared statements |
+| Redis | an in-memory `Map` — `ratelimit.js` is 63 lines |
+| TypeScript / bundler | JavaScript with JSDoc |
+| jest / vitest | `node:assert` |
+
+Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
+(`ocr/`), covered by 98 tests.
+
+The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
+rule, so new phrasing means a new rule rather than a model that generalises. In
+exchange the whole thing answers a webhook in ~3 ms, uses 23 MB of RAM, and needs no
+GPU. The only neural network in the system is the 7.8 MB OCR recognition model.
 
 ---
 
@@ -128,7 +170,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           71 tests, no network or GPU required — `npm test`
+test/           98 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync
 ```
 
@@ -140,7 +182,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 71 tests: money precision, dedup, PDPA deletion, NLU, Flex validity
+npm test        # 98 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real
