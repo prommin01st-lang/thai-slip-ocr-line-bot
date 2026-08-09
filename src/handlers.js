@@ -455,18 +455,23 @@ async function handlePostback(event) {
     // ค่ามาจาก postback ซึ่งผู้ใช้ปลอมได้ — ต้องอยู่ในรายการที่รู้จักเท่านั้น
     // ไม่งั้นจะมีหมวดแปลกปลอมโผล่ในสรุปและงบรายหมวดไปตลอด
     if (!isCategory(c)) return respond(event, notFoundCard(id));
+    const was = L.getTxn(userId, id)?.category ?? null;
     if (!L.setCategory(userId, id, c)) return respond(event, notFoundCard(id));
     const t = L.getTxn(userId, id);
     return respond(event, card({
-      title: `จัดเป็นหมวด ${labelOf(c)} แล้ว`, emoji: "📂", tone: "success",
+      title: was ? `เปลี่ยนหมวดเป็น ${labelOf(c)} แล้ว` : `จัดเป็นหมวด ${labelOf(c)} แล้ว`,
+      emoji: "📂", tone: "success",
       rows: [
+        { label: "รายการ", value: `#${t.id}` },
         { label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
-        { label: "หมวด", value: labelOf(c) },
+        // บอกของเดิมด้วยตอนเปลี่ยน — ผู้ใช้จะได้รู้ว่ากดถูกตัวและกดกลับได้ถ้าพลาด
+        ...(was && was !== c ? [{ label: "จากเดิม", value: labelOf(was) }] : []),
       ],
       text: "จำไว้ให้แล้ว — รายการคล้ายกันครั้งหน้าผมจัดหมวดนี้ให้เอง",
       actions: [
+        { label: "🧾 กลับไปรายการ", data: "act=list", primary: true },
         { label: "📌 ตั้งงบหมวดนี้", fill: `งบ ${c} `, data: "act=prompt&kind=budget" },
-        { label: "📊 ดูสรุป", data: "act=summary", primary: true },
+        { label: "📊 ดูสรุป", data: "act=summary" },
       ],
     }));
   }
@@ -474,10 +479,17 @@ async function handlePostback(event) {
     const t = L.getTxn(userId, id);
     if (!t) return respond(event, notFoundCard(id));
     return respond(event, card({
-      title: "เลือกหมวด", emoji: "📂", tone: "info",
-      rows: [{ label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
-             ...(t.note ? [{ label: "รายการ", value: t.note }] : [])],
-      actions: categoryButtons(id, t.category, { all: true }),
+      title: t.category ? "เปลี่ยนหมวด" : "เลือกหมวด", emoji: "📂", tone: "info",
+      rows: [
+        { label: "รายการ", value: `#${t.id}` },
+        { label: "ยอด", value: `${L.fromCents(t.amount_cents)} บาท` },
+        ...(t.note || t.counterparty ? [{ label: "รายละเอียด", value: t.note || t.counterparty }] : []),
+        ...(t.category ? [{ label: "หมวดตอนนี้", value: labelOf(t.category) }] : []),
+      ],
+      // { all: true } = โชว์ทุกหมวด เพราะเข้ามาถึงหน้านี้แปลว่าตั้งใจจะเลือกเองแล้ว
+      // (หมวดที่เป็นอยู่ถูกตัดออกให้อัตโนมัติ กดซ้ำไม่มีประโยชน์)
+      actions: [...categoryButtons(id, t.category, { all: true }),
+                { label: "🧾 กลับไปรายการ", data: "act=list" }],
     }));
   }
 

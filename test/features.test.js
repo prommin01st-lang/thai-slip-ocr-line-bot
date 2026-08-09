@@ -536,4 +536,37 @@ ok("จำกัดแยกรายคน ไม่ใช่โควตาร
 for (let i = 0; i < 50; i++) assert.equal(RL.take(null, "image", T0).ok, true);
 ok("ไม่มี userId → ไม่จำกัด (กลุ่ม/ห้องแชท)");
 
+// --- แก้หมวดย้อนหลังจาก "รายการ" ---
+//
+// หมวดถูกเดาให้ตอนบันทึก ถ้าเดาผิดหรือยังไม่ได้จัด ต้องแก้จากรายการได้
+// ไม่งั้นทางเดียวคือลบทิ้งแล้วบันทึกใหม่ ซึ่งเสียทั้งวันที่และเลขรายการเดิม
+const E2 = "Ucatedit0000000000000000000001";
+L.ensureUser(E2, "E"); L.grantConsent(E2);
+const ce1 = L.recordEntry(E2, { direction: "out", amountCents: 12000, note: "กาแฟ" });
+const ce2 = L.recordEntry(E2, { direction: "in", amountCents: 50000, note: "เงินเดือน" });
+assert.equal(L.getTxn(E2, ce1.txnId).category, "อาหาร", "เดาหมวดให้ตอนบันทึก");
+
+const listJson = JSON.stringify(txnListBubble(L.recentTxns(E2, 10), fromCents));
+assert.ok(listJson.includes(`act=catpick&id=${ce1.txnId}`),
+  "รายจ่ายต้องมีปุ่มเปลี่ยนหมวดในรายการ");
+assert.ok(!listJson.includes(`act=catpick&id=${ce2.txnId}`),
+  "รายรับไม่ควรมีปุ่มหมวด — หมวดมีไว้คุมรายจ่าย");
+assert.ok(listJson.includes("เปลี่ยนหมวด"), "มีหมวดอยู่แล้ว → ป้ายต้องเป็น ‘เปลี่ยนหมวด’");
+ok("รายการล่าสุดมีปุ่มแก้หมวด (เฉพาะรายจ่าย)");
+
+// แก้แล้วต้องเปลี่ยนจริง และจำไว้ใช้ครั้งหน้า
+assert.equal(L.setCategory(E2, ce1.txnId, "บันเทิง"), true);
+assert.equal(L.getTxn(E2, ce1.txnId).category, "บันเทิง", "หมวดต้องเปลี่ยนจริง");
+assert.equal(L.getTxn(E2, ce1.txnId).amount_cents, 12000, "ยอดต้องไม่ถูกแตะ");
+const ce3 = L.recordEntry(E2, { direction: "out", amountCents: 8000, note: "กาแฟ" });
+assert.equal(L.getTxn(E2, ce3.txnId).category, "บันเทิง", "ที่แก้ไว้ต้องถูกใช้กับรายการถัดไป");
+ok("แก้หมวดย้อนหลัง → เปลี่ยนจริง ยอดไม่กระทบ และจำไว้ใช้ครั้งหน้า");
+
+// รายการที่ยังไม่มีหมวดเลย → ป้ายต้องเป็น "จัดหมวด" ไม่ใช่ "เปลี่ยนหมวด"
+const ce4 = L.recordEntry(E2, { direction: "out", amountCents: 9900, note: "อะไรก็ไม่รู้" });
+assert.equal(L.getTxn(E2, ce4.txnId).category, null, "คำที่ไม่รู้จักต้องไม่เดามั่ว");
+assert.ok(JSON.stringify(txnListBubble([L.getTxn(E2, ce4.txnId)], fromCents)).includes("จัดหมวด"),
+  "ยังไม่มีหมวด → ป้ายต้องเป็น ‘จัดหมวด’");
+ok("ป้ายปุ่มเปลี่ยนตามว่ามีหมวดอยู่แล้วหรือยัง");
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

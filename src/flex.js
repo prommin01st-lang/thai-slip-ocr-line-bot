@@ -572,6 +572,15 @@ export function txnListBubble(rows, fromCents) {
             action: { type: "postback", label: "✏️ แก้ยอด",
                       data: `act=prompt&kind=edit&id=${t.id}`,
                       inputOption: "openKeyboard", fillInText: `แก้ ${t.id} ` } },
+          // แก้หมวดย้อนหลัง — หมวดถูกเดาให้ตอนบันทึก ถ้าเดาผิดหรือยังไม่ได้จัด
+          // ต้องแก้จากตรงนี้ได้ ไม่งั้นต้องลบทิ้งแล้วบันทึกใหม่
+          // มีเฉพาะรายจ่าย เพราะหมวดมีไว้คุมงบ/ดูว่าใช้อะไรมากสุด
+          ...(t.direction === "out" ? [
+            { type: "button", style: "link", height: "sm",
+              action: { type: "postback",
+                        label: t.category ? "📂 เปลี่ยนหมวด" : "📂 จัดหมวด",
+                        data: `act=catpick&id=${t.id}` } },
+          ] : []),
           ...(t.direction === "unknown" ? [
             { type: "button", style: "link", height: "sm",
               action: { type: "postback", label: "รับ/จ่าย?", data: `act=askdir&id=${t.id}` } },

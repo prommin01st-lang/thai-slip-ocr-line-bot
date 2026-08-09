@@ -57,6 +57,8 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
 - Money stored as **integer satang** — never floats
 - Budgets with over/near-limit alerts, recurring-bill detection, weekly digest
 - Type `กาแฟ 60` in chat to log an expense — rule-based, no model needed
+- Expenses are auto-categorised from a Thai keyword dictionary, and every category
+  is one tap to change from the transaction list — corrections are remembered
 
 **Privacy (Thailand PDPA)**
 - Explicit consent required before anything is stored
