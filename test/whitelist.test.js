@@ -7,11 +7,13 @@ import { open } from "../src/db.js";
 import * as L from "../src/ledger.js";
 
 const ME = "Uwhitelist00000000000000000001";
+const FRIEND = "Uwhitelist00000000000000000003";
 const OUTSIDER = "Uwhitelist00000000000000000002";
 
 process.env.LINE_CHANNEL_SECRET ||= "test-secret";
 process.env.LINE_CHANNEL_ACCESS_TOKEN ||= "test-token";
-process.env.ALLOWED_USERS = ME;
+// เว้นวรรครอบจุลภาคแบบที่คนพิมพ์จริง — ต้องรับได้
+process.env.ALLOWED_USERS = `${ME}, ${FRIEND}`;
 
 L.setDb(open(":memory:"));
 const { handleEvent } = await import("../src/handlers.js");
@@ -35,6 +37,33 @@ ok("คนนอกถูกกั้นตั้งแต่ก่อนเข�
 await fire(msg(ME));
 assert.ok(L.getUser(ME), "คนใน whitelist ต้องใช้งานได้ตามปกติ");
 ok("คนใน whitelist ใช้งานได้ปกติ");
+
+// หลายคนพร้อมกัน + เว้นวรรครอบจุลภาค
+await fire(msg(FRIEND));
+assert.ok(L.getUser(FRIEND), "คนที่สองใน ALLOWED_USERS ก็ต้องใช้ได้");
+ok("ใส่ได้หลายคน คั่นจุลภาค เว้นวรรคได้");
+
+// คนนอกต้องได้ ID ของตัวเองกลับไป เพื่อส่งให้เจ้าของบอทขอสิทธิ์เอง
+// ไม่งั้นการเพิ่มคนใหม่ต้องให้เจ้าของ ssh เข้าไปอ่าน log ทุกครั้ง
+//
+// ดักที่ fetch เพื่ออ่านสิ่งที่ถูกส่งออกจริง — token ในเทสเป็นของปลอม
+// ถ้าไม่ดัก SDK จะโยน 401 ก่อนที่จะได้เห็นเนื้อข้อความ
+const posted = [];
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  posted.push(opts?.body ? JSON.parse(opts.body) : null);
+  return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+};
+await handleEvent({ type: "message", message: { type: "text", text: "หวัดดี" },
+                    source: { userId: OUTSIDER }, replyToken: "tok" });
+globalThis.fetch = realFetch;
+
+assert.equal(posted.length, 1, "คนนอกต้องได้คำตอบใบเดียว ไม่ใช่หลายใบ");
+const body = JSON.stringify(posted[0]);
+assert.ok(body.includes("บอทส่วนตัว"), "ต้องเป็นการ์ดแจ้งว่าเป็นบอทส่วนตัว");
+assert.ok(body.includes(OUTSIDER), "ต้องมี ID ของเจ้าตัวให้เอาไปขอสิทธิ์");
+assert.ok(!body.includes(ME) && !body.includes(FRIEND), "ห้ามหลุด ID ของคนอื่นออกไป");
+ok("คนนอกได้ ID ตัวเองกลับไปขอสิทธิ์ ไม่ต้องให้เจ้าของงม log");
 
 // follow ก็ต้องกั้น ไม่งั้นคนนอกแอดบอทแล้วยังได้การ์ดขอความยินยอม
 await fire({ type: "follow", source: { userId: OUTSIDER }, replyToken: null });
