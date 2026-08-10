@@ -148,6 +148,14 @@ const MIGRATIONS = [
   );
   CREATE INDEX access_status ON access (status);
   `,
+  // --- migration 6: เก็บชื่อผู้ขอไว้ในคำขอ ---
+  //
+  // แอดมินเห็นแค่ ID ตัดท้าย 8 ตัว ตัดสินใจไม่ได้ว่าเป็นใคร — คนแปลกหน้ากับเพื่อน
+  // หน้าตาเหมือนกันหมด เก็บชื่อที่ดึงจาก LINE ตอนกดขอไว้เลย
+  // (ไม่เก็บใน users เพราะคนที่ยังไม่ได้รับอนุมัติต้องไม่มีแถวใน users)
+  `
+  ALTER TABLE access ADD COLUMN display_name TEXT;
+  `,
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {

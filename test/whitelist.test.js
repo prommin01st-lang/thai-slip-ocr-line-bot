@@ -46,8 +46,10 @@ await fire(msg(FRIEND));
 assert.ok(L.getUser(FRIEND), "คนที่สองใน ALLOWED_USERS ก็ต้องใช้ได้");
 ok("ใส่ได้หลายคน คั่นจุลภาค เว้นวรรคได้");
 
-// คนนอกต้องได้ ID ของตัวเองกลับไป เพื่อส่งให้เจ้าของบอทขอสิทธิ์เอง
-// ไม่งั้นการเพิ่มคนใหม่ต้องให้เจ้าของ ssh เข้าไปอ่าน log ทุกครั้ง
+// เจอกันครั้งแรกต้องเรียบที่สุด — ปุ่มเดียว ไม่มีศัพท์เทคนิค ไม่มีรหัสอะไรโผล่มา
+//
+// คนที่เพิ่งแอดบอทไม่รู้จักคำว่า "LINE user ID" และไม่ควรต้องรู้
+// ตัวอักษร 33 ตัวโผล่มาตั้งแต่ข้อความแรกมีแต่ทำให้งงและดูเหมือนบอทพัง
 //
 // ดักที่ fetch เพื่ออ่านสิ่งที่ถูกส่งออกจริง — token ในเทสเป็นของปลอม
 // ถ้าไม่ดัก SDK จะโยน 401 ก่อนที่จะได้เห็นเนื้อข้อความ
@@ -61,20 +63,14 @@ await handleEvent({ type: "message", message: { type: "text", text: "หวั�
                     source: { userId: OUTSIDER }, replyToken: "tok" });
 globalThis.fetch = realFetch;
 
-assert.equal(posted.length, 1, "ต้องตอบครั้งเดียว (reply เดียว หลายข้อความ)");
-const msgs = posted[0].messages;
-assert.equal(msgs.length, 2, "การ์ด + ข้อความ ID");
-assert.equal(msgs[0].type, "flex");
-assert.ok(JSON.stringify(msgs[0]).includes("บอทส่วนตัว"), "ใบแรกต้องเป็นการ์ดแจ้งเตือน");
-
-// ใบที่สองต้องเป็น ID ล้วน ๆ — ตัวอักษรใน Flex คัดลอกไม่ได้
-// และถ้ามีคำอธิบายปนมาด้วย กดคัดลอกแล้วจะได้ขยะติดมา ต้องมาตัดเองอีก
-assert.equal(msgs[1].type, "text", "ใบที่สองต้องเป็นข้อความธรรมดา ไม่ใช่ Flex");
-assert.equal(msgs[1].text, OUTSIDER, "ต้องเป็น ID ล้วน ๆ ไม่มีอะไรปน (คัดลอกแล้ววางได้เลย)");
-
-const body = JSON.stringify(posted[0]);
-assert.ok(!body.includes(ME) && !body.includes(FRIEND), "ห้ามหลุด ID ของคนอื่นออกไป");
-ok("คนนอกได้ ID ล้วน ๆ เป็นข้อความธรรมดา คัดลอกได้ทันที");
+const first = posted[0].messages;
+assert.equal(first.length, 1, "ครั้งแรกต้องมีใบเดียว ไม่มีรหัสตามมาให้งง");
+assert.equal(first[0].type, "flex");
+const firstJson = JSON.stringify(first[0]);
+assert.ok(firstJson.includes("act=req"), "ต้องมีปุ่มขอใช้งาน — ทางเดียวที่คนใหม่ต้องรู้");
+assert.ok(!firstJson.includes(OUTSIDER), "ห้ามมี ID โผล่ตั้งแต่ข้อความแรก");
+assert.ok(!firstJson.includes(ME) && !firstJson.includes(FRIEND), "ห้ามหลุด ID ของคนอื่น");
+ok("ครั้งแรกเห็นแค่ปุ่มเดียว ไม่มีศัพท์เทคนิคและไม่มีรหัสให้งง");
 
 // follow ก็ต้องกั้น ไม่งั้นคนนอกแอดบอทแล้วยังได้การ์ดขอความยินยอม
 await fire({ type: "follow", source: { userId: OUTSIDER }, replyToken: null });
@@ -113,7 +109,17 @@ let sent = grab();
 assert.equal(L.accessStatus(OUTSIDER), "pending", "ต้องบันทึกคำขอเป็น pending");
 assert.ok(sent.some((s) => s.url.includes("/push") && s.body?.to === ME),
   "ต้อง push แจ้งแอดมิน");
-ok("คนนอกกดขอสิทธิ์ → บันทึกคำขอ + แจ้งแอดมิน");
+// รหัสสำรองต้องมาตอนนี้ ไม่ใช่ตอนแรก — ตอนนี้เขามีบริบทแล้วว่ามันคืออะไร
+const after = sent.find((s) => s.url.includes("/reply"))?.body.messages ?? [];
+assert.ok(after.some((m) => m.type === "text" && m.text === OUTSIDER),
+  "หลังกดขอแล้วต้องได้รหัสเป็นข้อความล้วน ๆ ไว้ส่งให้ผู้ดูแลเอง");
+assert.ok(JSON.stringify(after).includes("ถ้ารอนาน"), "ต้องบอกด้วยว่าเอารหัสไปทำอะไร");
+
+// แอดมินต้องเห็น "ชื่อ" ไม่ใช่แค่ตัวอักษร 8 ตัวท้าย ไม่งั้นตัดสินใจไม่ได้ว่าเป็นใคร
+const toAdmin = pushes(sent).find((s) => s.body?.to === ME);
+assert.ok(JSON.stringify(toAdmin.body).includes("ชื่อใน LINE"),
+  "การ์ดแจ้งแอดมินต้องมีช่องชื่อ");
+ok("คนนอกกดขอสิทธิ์ → บันทึกคำขอ + แจ้งแอดมิน (พร้อมชื่อ) + ได้รหัสสำรอง");
 
 // 2) กดขอซ้ำต้องไม่ push ซ้ำ — คนเดียวเผาโควตา 300/เดือนหมดได้
 grab();

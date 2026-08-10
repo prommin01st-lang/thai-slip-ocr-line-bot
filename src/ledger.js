@@ -47,11 +47,11 @@ export function accessStatus(userId) {
  * ถ้ากดขอซ้ำแล้ว push ทุกครั้ง คนเดียวก็เผาโควตา 300/เดือนหมดได้
  * ถูกปฏิเสธไปแล้วก็ขอใหม่ไม่ได้ ต้องให้แอดมินปลดให้เอง
  */
-export function requestAccess(userId) {
+export function requestAccess(userId, displayName = null) {
   const cur = accessStatus(userId);
   if (cur) return false;
-  db().prepare(`INSERT INTO access (line_user_id, status, requested_at) VALUES (?, 'pending', ?)`)
-    .run(userId, nowIso());
+  db().prepare(`INSERT INTO access (line_user_id, status, requested_at, display_name)
+                VALUES (?, 'pending', ?, ?)`).run(userId, nowIso(), displayName);
   return true;
 }
 
@@ -75,9 +75,15 @@ export function grantAccess(userId, adminId) {
 
 export function accessList(status) {
   return db().prepare(`
-    SELECT a.*, u.display_name FROM access a
+    SELECT a.*, COALESCE(u.display_name, a.display_name) AS display_name FROM access a
     LEFT JOIN users u ON u.line_user_id = a.line_user_id
     WHERE a.status = ? ORDER BY COALESCE(a.decided_at, a.requested_at) DESC`).all(status);
+}
+
+/** ชื่อที่บันทึกไว้ตอนกดขอ — ใช้ตอนแอดมินดูว่าใครขอ */
+export function accessName(userId) {
+  return db().prepare("SELECT display_name FROM access WHERE line_user_id = ?")
+    .get(userId)?.display_name ?? null;
 }
 
 export function ensureUser(userId, displayName = null) {

@@ -130,15 +130,35 @@ const isAdmin = (userId) => config.adminUsers.has(userId);
 const isAllowed = (userId) =>
   isAdmin(userId) || config.allowedUsers.has(userId) || L.accessStatus(userId) === "approved";
 
+/**
+ * "รหัสสำรอง" — การ์ดอธิบาย + ID เป็นข้อความธรรมดาให้คัดลอก
+ *
+ * โผล่ **หลังจากกดขอไปแล้วเท่านั้น** ไม่ใช่ตอนเจอกันครั้งแรก
+ * คนที่เพิ่งแอดบอทไม่รู้จักคำว่า "LINE user ID" และไม่ควรต้องรู้ด้วย
+ * เห็นตัวอักษร 33 ตัวโผล่มาลอย ๆ ตั้งแต่ข้อความแรกมีแต่ทำให้งงและดูเหมือนบอทพัง
+ * พอกดขอแล้วค่อยให้ ตอนนั้นเขามีบริบทแล้วว่ามันคือรหัสไว้ส่งให้ผู้ดูแล
+ */
+const idFallback = (userId) => [
+  card({
+    title: "ถ้ารอนาน", emoji: "💬", tone: "neutral",
+    text: "ส่งรหัสในข้อความถัดไปให้ผู้ดูแลโดยตรงได้ครับ (กดค้างที่ข้อความเพื่อคัดลอก)",
+    altText: "ส่งรหัสให้ผู้ดูแลโดยตรงได้",
+  }),
+  { type: "text", text: userId },
+];
+
 /** การ์ดที่คนยังไม่มีสิทธิ์ได้รับ — เนื้อหาเปลี่ยนตามสถานะคำขอ */
 function blockedCards(userId) {
   const st = L.accessStatus(userId);
   if (st === "pending") {
-    return card({
-      title: "ส่งคำขอแล้ว", emoji: "⏳", tone: "info",
-      text: "รอผู้ดูแลอนุมัติอยู่ครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
-      altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
-    });
+    return [
+      card({
+        title: "ส่งคำขอแล้ว", emoji: "⏳", tone: "info",
+        text: "รอผู้ดูแลอนุมัติอยู่ครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
+        altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
+      }),
+      ...idFallback(userId),
+    ];
   }
   if (st === "rejected") {
     // ไม่ให้กดขอซ้ำ — ไม่งั้นแอดมินโดนสแปมและโควตา push หมด
@@ -148,56 +168,71 @@ function blockedCards(userId) {
       altText: "ไม่ได้รับสิทธิ์ใช้งาน",
     });
   }
-  return [
-    card({
-      title: "บอทส่วนตัว", emoji: "🔒", tone: "info",
-      text: "บอทตัวนี้เปิดให้เฉพาะผู้ที่ได้รับอนุญาตครับ\n\n"
-          + "กดปุ่มด้านล่างเพื่อขอสิทธิ์ หรือส่งรหัสในข้อความถัดไปให้ผู้ดูแลโดยตรง",
-      actions: [{ label: "🙋 ขอสิทธิ์ใช้งาน", data: "act=req", primary: true }],
-      altText: "บอทตัวนี้เปิดให้เฉพาะผู้ที่ได้รับอนุญาต",
-    }),
-    // ID เป็นข้อความธรรมดาใบแยก — ตัวอักษรใน Flex คัดลอกไม่ได้
-    { type: "text", text: userId },
-  ];
+  // เจอกันครั้งแรก — มีปุ่มเดียว ไม่มีศัพท์เทคนิค ไม่มีรหัสอะไรให้งง
+  return card({
+    title: "บอทนี้ต้องขออนุญาตก่อนใช้", emoji: "🔒", tone: "info",
+    text: "ผมช่วยอ่านสลิปและจดรายรับ-รายจ่ายให้ครับ\n\n"
+        + "กดปุ่มด้านล่างเพื่อขอใช้งาน เดี๋ยวผู้ดูแลกดอนุมัติให้ แล้วผมจะแจ้งกลับมา",
+    actions: [{ label: "🙋 ขอใช้งาน", data: "act=req", primary: true }],
+    altText: "บอทนี้ต้องขออนุญาตก่อนใช้ — กดขอใช้งานได้เลย",
+  });
 }
 
 /** การ์ดแจ้งแอดมินว่ามีคนขอสิทธิ์ */
-const requestCard = (userId) => card({
-  title: "มีคนขอสิทธิ์ใช้งาน", emoji: "🙋", tone: "warn",
-  rows: [{ label: "LINE ID", value: `…${userId.slice(-8)}` }],
+const requestCard = (userId, name = null) => card({
+  title: "มีคนขอใช้งานบอท", emoji: "🙋", tone: "warn",
+  rows: [
+    // ชื่อมาก่อน ID เสมอ — แอดมินตัดสินจากชื่อ ไม่ใช่จากตัวอักษร 8 ตัวท้าย
+    { label: "ชื่อใน LINE", value: name || "(ดึงชื่อไม่ได้)" },
+    { label: "รหัส", value: `…${userId.slice(-8)}` },
+  ],
   text: "อนุมัติแล้วเขาจะใช้บอทได้ทันที",
   actions: [
     [{ label: "✅ อนุมัติ", data: `act=acc&v=ok&u=${userId}`, primary: true },
      { label: "❌ ปฏิเสธ", data: `act=acc&v=no&u=${userId}` }],
   ],
-  altText: `มีคนขอสิทธิ์ใช้งาน (…${userId.slice(-8)})`,
+  altText: `${name || "มีคน"} ขอใช้งานบอท`,
 });
 
+/** ชื่อใน LINE ของคนที่ยังไม่ได้เป็นผู้ใช้ — ล้มเหลวได้ ไม่ควรทำให้คำขอพัง */
+async function displayNameOf(userId) {
+  try {
+    return (await client.getProfile(userId)).displayName ?? null;
+  } catch (err) {
+    console.warn(`[ดึงชื่อไม่ได้] ${userId}: ${err.message}`);
+    return null;
+  }
+}
+
 /**
- * คนนอกกดปุ่ม "ขอสิทธิ์"
+ * คนนอกกดปุ่ม "ขอใช้งาน"
  *
  * push หาแอดมิน **เฉพาะตอนเป็นคำขอใหม่จริง ๆ** (requestAccess คืน true)
  * กดซ้ำไม่ push ซ้ำ ไม่งั้นคนเดียวเผาโควตา 300/เดือนหมดได้
  * โควตาหมดก็ยังบันทึกคำขอไว้ — แอดมินพิมพ์ "คำขอ" มาดูเองได้
  */
 async function handleAccessRequest(event, userId) {
-  const isNew = L.requestAccess(userId);
+  const name = await displayNameOf(userId);
+  const isNew = L.requestAccess(userId, name);
   if (isNew) {
-    console.log(`[ขอสิทธิ์] ${userId}`);
+    console.log(`[ขอสิทธิ์] ${name ?? "(ไม่มีชื่อ)"} ${userId}`);
     if (quota().left > 0) {
       for (const admin of config.adminUsers) {
-        try { await pushTo(admin, requestCard(userId)); L.logPush(admin, "access"); }
+        try { await pushTo(admin, requestCard(userId, name)); L.logPush(admin, "access"); }
         catch (err) { console.error(`[แจ้งแอดมินไม่ได้] ${err.message}`); }
       }
     } else {
       console.warn("[ขอสิทธิ์] โควตา push หมด — แอดมินต้องพิมพ์ “คำขอ” มาดูเอง");
     }
   }
-  return respond(event, card({
-    title: isNew ? "ส่งคำขอแล้ว" : "ส่งคำขอไปก่อนหน้านี้แล้ว", emoji: "⏳", tone: "info",
-    text: "รอผู้ดูแลอนุมัติครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
-    altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
-  }));
+  return respond(event, [
+    card({
+      title: isNew ? "ส่งคำขอแล้ว" : "ส่งคำขอไปก่อนหน้านี้แล้ว", emoji: "⏳", tone: "info",
+      text: "รอผู้ดูแลอนุมัติครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
+      altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
+    }),
+    ...idFallback(userId),
+  ]);
 }
 
 // ---------- ส่งข้อความ ----------
@@ -596,7 +631,7 @@ async function handlePostback(event) {
     return respond(event, card({
       title: okv ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว", emoji: okv ? "✅" : "🚫",
       tone: okv ? "success" : "neutral",
-      rows: [{ label: "ผู้ใช้", value: `…${target.slice(-8)}` },
+      rows: [{ label: "ผู้ใช้", value: L.accessName(target) || `…${target.slice(-8)}` },
              { label: "คำขอที่ค้าง", value: left ? `${left} รายการ` : "ไม่มีแล้ว" }],
       actions: left ? [{ label: "📋 ดูคำขอที่ค้าง", text: "คำขอ", primary: true }] : [],
     }));
@@ -985,7 +1020,7 @@ async function handleText(event) {
         actions: [{ label: "👥 ดูผู้ใช้ทั้งหมด", text: "ผู้ใช้" }],
       }));
     }
-    return respond(event, pend.slice(0, 5).map((r) => requestCard(r.line_user_id)));
+    return respond(event, pend.slice(0, 5).map((r) => requestCard(r.line_user_id, r.display_name)));
   }
 
   if (isAdmin(userId) && /^(ผู้ใช้|users?)$/i.test(text)) {
@@ -999,8 +1034,7 @@ async function handleText(event) {
       ],
       // ถอนสิทธิ์ = ตั้งเป็น rejected ซึ่งทำได้จากปุ่มในการ์ดคำขอ
       // คนที่มาจาก .env ถอนจากในแชทไม่ได้ ต้องแก้ไฟล์ — ตั้งใจให้เป็นแบบนั้น
-      notes: app.map((r) => `…${r.line_user_id.slice(-8)}` +
-                            (r.display_name ? ` (${r.display_name})` : "")),
+      notes: app.map((r) => `${r.display_name || "(ไม่มีชื่อ)"} · …${r.line_user_id.slice(-8)}`),
       text: app.length ? "" : "ยังไม่มีใครถูกอนุมัติจากในแชท",
       actions: [{ label: "📋 ดูคำขอที่ค้าง", text: "คำขอ" }],
       altText: `ผู้ใช้ที่มีสิทธิ์ ${app.length} คน`,
