@@ -63,6 +63,8 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
   categorised", and says how many rows it is hiding rather than silently truncating
 
 **Privacy (Thailand PDPA)**
+- Optional `ALLOWED_USERS` allowlist — outsiders are rejected before any DB write
+  and before the OCR queue, so they cannot consume the shared push quota
 - Explicit consent required before anything is stored
 - Slip **images are never kept** — only a SHA-256 fingerprint for deduplication
 - Account numbers stored as last 4 digits only
@@ -143,7 +145,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 113 tests.
+(`ocr/`), covered by 121 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -174,7 +176,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           113 tests, no network or GPU required — `npm test`
+test/           121 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
 assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
@@ -187,7 +189,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 113 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 121 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real

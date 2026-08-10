@@ -684,6 +684,11 @@ async function handleText(event) {
         { label: "หมวดที่จำไว้", value: `${c.hints}` },
         { label: "ให้ความยินยอม", value: u.consent_at.slice(0, 10) },
       ],
+      // โชว์ ID ของเจ้าตัวเอง — เป็นกุญแจที่ผูกข้อมูลทุกแถวเข้ากับคน จึงควรอยู่ในหน้า
+      // "ข้อมูลที่เก็บไว้" ตามหลัก PDPA อยู่แล้ว และเป็นวิธีเดียวที่เจ้าของระบบ
+      // จะรู้ ID ตัวเองไปใส่ ALLOWED_USERS โดยไม่ต้องเข้าไปงม log บนเซิร์ฟเวอร์
+      // (เห็นเฉพาะเจ้าของ ID นั้นคนเดียว — ตอบกลับไปในแชทของเขาเอง)
+      text: `LINE ID ของคุณ (กดค้างเพื่อคัดลอก)\n${userId}`,
       actions: [
         ...(config.exportEnabled && config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
         { label: "⚙️ ตั้งค่า", data: "act=settings" },
@@ -914,6 +919,27 @@ async function handleText(event) {
 /** จุดเข้าเดียวจาก index.js — ทุก event ผ่านที่นี่ */
 export async function handleEvent(event) {
   const userId = event.source?.userId;
+
+  // --- whitelist ---
+  //
+  // ตรวจ **ก่อน** ensureUser() เพื่อไม่ให้คนนอกได้แถวใน DB ด้วยซ้ำ และก่อน rate limit
+  // เพราะไม่มีเหตุผลจะจ่ายงานอะไรให้คนที่ไม่ได้รับอนุญาต
+  //
+  // ไม่มี userId ก็บล็อก (แชทกลุ่ม/ห้อง) — บอทส่วนตัวไม่ควรทำงานในกลุ่มอยู่แล้ว
+  if (config.allowedUsers.size && !(userId && config.allowedUsers.has(userId))) {
+    // log ID ที่ถูกปฏิเสธไว้เสมอ — ถ้าเจ้าของเผลอใส่ ID ผิดจนล็อกตัวเองออก
+    // บรรทัดนี้คือทางเดียวที่จะรู้ว่า ID จริงคืออะไร (`docker compose logs bot`)
+    console.warn(`[ปฏิเสธ] ไม่อยู่ใน ALLOWED_USERS: ${userId ?? "(ไม่มี userId — กลุ่ม/ห้อง)"}`);
+    if (event.replyToken) {
+      return respond(event, card({
+        title: "บอทส่วนตัว", emoji: "🔒", tone: "info",
+        text: "ขออภัยครับ บอทตัวนี้เปิดให้เฉพาะผู้ใช้ที่กำหนดไว้เท่านั้น",
+        altText: "บอทตัวนี้เปิดให้เฉพาะผู้ใช้ที่กำหนดไว้",
+      }));
+    }
+    return;
+  }
+
   if (userId) {
     try { L.ensureUser(userId); } catch (e) { console.error(`[db] ${e.message}`); }
   }

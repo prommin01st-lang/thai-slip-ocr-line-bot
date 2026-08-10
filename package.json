@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
-    "test": "node --disable-warning=ExperimentalWarning test/queue.test.js && node --disable-warning=ExperimentalWarning test/flex.test.js && node --disable-warning=ExperimentalWarning test/ledger.test.js && node --disable-warning=ExperimentalWarning test/nlu.test.js && node --disable-warning=ExperimentalWarning test/features.test.js",
+    "test": "node --disable-warning=ExperimentalWarning test/queue.test.js && node --disable-warning=ExperimentalWarning test/flex.test.js && node --disable-warning=ExperimentalWarning test/ledger.test.js && node --disable-warning=ExperimentalWarning test/nlu.test.js && node --disable-warning=ExperimentalWarning test/features.test.js && node --disable-warning=ExperimentalWarning test/whitelist.test.js",
     "dev:all": "./dev.sh",
     "tunnel": "tailscale funnel --bg 3000",
     "tunnel:off": "tailscale funnel --https=443 off",
