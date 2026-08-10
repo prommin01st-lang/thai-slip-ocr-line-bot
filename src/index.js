@@ -2,6 +2,8 @@
 //
 // กฎเหล็ก: LINE คาดหวัง 200 กลับแทบจะทันที ถ้าช้าเกินมันจะ retry ส่ง event เดิมซ้ำ
 // OCR ใช้ ~16 วิ/ใบ → ตอบ 200 ก่อน แล้วค่อยประมวลผลเบื้องหลัง (ไม่ await)
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { middleware } from "@line/bot-sdk";
 import { config } from "./config.js";
@@ -15,6 +17,25 @@ const app = express();
 // health ของตัว bot เอง (ไม่ใช่ของ OCR) — ใช้เช็คว่า tunnel ต่อถึงไหม
 app.get("/health", async (_req, res) => {
   res.json({ status: "ok", queue: ahead(), ocr: await ocr.health() });
+});
+
+/**
+ * รูปมาสคอตสำหรับใส่ในการ์ด
+ *
+ * Flex ฝังรูปเป็น base64 ไม่ได้ — LINE ไปดึงจาก URL เองเสมอ จึงต้องมีที่เสิร์ฟ
+ * เปิดเฉพาะโฟลเดอร์ assets/Mascot **ไม่ใช่ทั้ง assets/** เพราะในนั้นมีสเปก
+ * กับไฟล์ต้นฉบับที่ไม่มีเหตุผลจะเปิดสู่อินเทอร์เน็ต
+ *
+ * ชื่อไฟล์ถูกจำกัดด้วย regex ไม่ให้มี `/` หรือ `.` ซ้อน — กัน path traversal
+ * (`/mascot/..%2f..%2f.env`) express ถอด URL-encode ให้ก่อนถึง handler
+ */
+const MASCOT_DIR = fileURLToPath(new URL("../assets/Mascot/", import.meta.url));
+app.get("/mascot/:file", (req, res) => {
+  if (!/^[A-Za-z0-9_-]+\.(png|jpg|jpeg)$/.test(req.params.file)) return res.sendStatus(404);
+  res.sendFile(join(MASCOT_DIR, req.params.file), {
+    // LINE cache รูปไว้อยู่แล้ว ตั้งยาวไปเลย รูปมาสคอตไม่ได้เปลี่ยนบ่อย
+    headers: { "Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff" },
+  }, (err) => { if (err && !res.headersSent) res.sendStatus(404); });
 });
 
 /**
