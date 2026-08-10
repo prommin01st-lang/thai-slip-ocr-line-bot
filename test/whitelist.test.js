@@ -58,12 +58,20 @@ await handleEvent({ type: "message", message: { type: "text", text: "หวั�
                     source: { userId: OUTSIDER }, replyToken: "tok" });
 globalThis.fetch = realFetch;
 
-assert.equal(posted.length, 1, "คนนอกต้องได้คำตอบใบเดียว ไม่ใช่หลายใบ");
+assert.equal(posted.length, 1, "ต้องตอบครั้งเดียว (reply เดียว หลายข้อความ)");
+const msgs = posted[0].messages;
+assert.equal(msgs.length, 2, "การ์ด + ข้อความ ID");
+assert.equal(msgs[0].type, "flex");
+assert.ok(JSON.stringify(msgs[0]).includes("บอทส่วนตัว"), "ใบแรกต้องเป็นการ์ดแจ้งเตือน");
+
+// ใบที่สองต้องเป็น ID ล้วน ๆ — ตัวอักษรใน Flex คัดลอกไม่ได้
+// และถ้ามีคำอธิบายปนมาด้วย กดคัดลอกแล้วจะได้ขยะติดมา ต้องมาตัดเองอีก
+assert.equal(msgs[1].type, "text", "ใบที่สองต้องเป็นข้อความธรรมดา ไม่ใช่ Flex");
+assert.equal(msgs[1].text, OUTSIDER, "ต้องเป็น ID ล้วน ๆ ไม่มีอะไรปน (คัดลอกแล้ววางได้เลย)");
+
 const body = JSON.stringify(posted[0]);
-assert.ok(body.includes("บอทส่วนตัว"), "ต้องเป็นการ์ดแจ้งว่าเป็นบอทส่วนตัว");
-assert.ok(body.includes(OUTSIDER), "ต้องมี ID ของเจ้าตัวให้เอาไปขอสิทธิ์");
 assert.ok(!body.includes(ME) && !body.includes(FRIEND), "ห้ามหลุด ID ของคนอื่นออกไป");
-ok("คนนอกได้ ID ตัวเองกลับไปขอสิทธิ์ ไม่ต้องให้เจ้าของงม log");
+ok("คนนอกได้ ID ล้วน ๆ เป็นข้อความธรรมดา คัดลอกได้ทันที");
 
 // follow ก็ต้องกั้น ไม่งั้นคนนอกแอดบอทแล้วยังได้การ์ดขอความยินยอม
 await fire({ type: "follow", source: { userId: OUTSIDER }, replyToken: null });
