@@ -131,6 +131,23 @@ const MIGRATIONS = [
   DELETE FROM slips WHERE txn_id IS NULL
      OR txn_id NOT IN (SELECT id FROM txns WHERE status != 'rejected');
   `,
+  // --- migration 5: คำขอสิทธิ์ใช้งาน (แอดมินอนุมัติในแชทได้) ---
+  //
+  // เดิม whitelist อยู่ใน .env อย่างเดียว เพิ่มคนทีต้องแก้ไฟล์ + `up -d` ใหม่ทุกครั้ง
+  // ตารางนี้ทำให้อนุมัติจากในแชทได้ทันที ไม่ต้องแตะเซิร์ฟเวอร์
+  //
+  // **ไม่มี FK ไป users โดยตั้งใจ** — คนที่ยังไม่ได้รับอนุมัติต้องไม่มีแถวใน users
+  // (whitelist กั้นก่อน ensureUser) ถ้าผูก FK ไว้จะเพิ่มคำขอไม่ได้เลย
+  `
+  CREATE TABLE access (
+    line_user_id TEXT PRIMARY KEY,
+    status       TEXT NOT NULL,      -- pending | approved | rejected
+    requested_at TEXT,
+    decided_at   TEXT,
+    decided_by   TEXT
+  );
+  CREATE INDEX access_status ON access (status);
+  `,
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {

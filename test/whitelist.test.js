@@ -14,6 +14,9 @@ process.env.LINE_CHANNEL_SECRET ||= "test-secret";
 process.env.LINE_CHANNEL_ACCESS_TOKEN ||= "test-token";
 // เว้นวรรครอบจุลภาคแบบที่คนพิมพ์จริง — ต้องรับได้
 process.env.ALLOWED_USERS = `${ME}, ${FRIEND}`;
+// แยก ADMIN_USERS ออกมา เพื่อให้มีเคส "มีสิทธิ์ใช้ แต่ไม่ใช่แอดมิน" (FRIEND)
+// ถ้าไม่ตั้ง ADMIN_USERS จะถอยไปใช้ ALLOWED_USERS ทั้งก้อน ทุกคนก็เป็นแอดมินหมด
+process.env.ADMIN_USERS = ME;
 
 L.setDb(open(":memory:"));
 const { handleEvent } = await import("../src/handlers.js");
@@ -89,5 +92,68 @@ await fire({ type: "message", message: { type: "image", id: "1" },
              source: { userId: OUTSIDER }, replyToken: null });
 assert.equal(depth(), 0, "รูปจากคนนอกต้องไม่เข้าคิว OCR");
 ok("รูปจากคนนอกไม่เข้าคิว OCR");
+
+// --- ขอสิทธิ์ / แอดมินอนุมัติจากในแชท ---
+//
+// เดิมเพิ่มคนต้องแก้ .env แล้ว `up -d` ใหม่ทุกครั้ง ตาราง access ทำให้อนุมัติในแชทได้
+const outbox = [];
+globalThis.fetch = async (u, o) => {
+  outbox.push({ url: String(u), body: o?.body ? JSON.parse(o.body) : null });
+  return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+};
+/** ข้อความที่ถูกส่งออกตั้งแต่ครั้งก่อนที่เรียก แล้วล้างกล่อง */
+const grab = () => outbox.splice(0);
+const pushes = (list) => list.filter((s) => s.url.includes("/push"));
+
+// 1) คนนอกกดขอสิทธิ์ → บันทึกคำขอ + แจ้งแอดมิน
+grab();
+await handleEvent({ type: "postback", postback: { data: "act=req" },
+                    source: { userId: OUTSIDER }, replyToken: "t" });
+let sent = grab();
+assert.equal(L.accessStatus(OUTSIDER), "pending", "ต้องบันทึกคำขอเป็น pending");
+assert.ok(sent.some((s) => s.url.includes("/push") && s.body?.to === ME),
+  "ต้อง push แจ้งแอดมิน");
+ok("คนนอกกดขอสิทธิ์ → บันทึกคำขอ + แจ้งแอดมิน");
+
+// 2) กดขอซ้ำต้องไม่ push ซ้ำ — คนเดียวเผาโควตา 300/เดือนหมดได้
+grab();
+await handleEvent({ type: "postback", postback: { data: "act=req" },
+                    source: { userId: OUTSIDER }, replyToken: "t" });
+assert.equal(pushes(grab()).length, 0,
+  "กดขอซ้ำต้องไม่ push แจ้งแอดมินอีก");
+ok("กดขอซ้ำไม่ push ซ้ำ — ไม่เผาโควตา");
+
+// 3) คนที่ไม่ใช่แอดมินยิง postback อนุมัติเองไม่ได้ ← ช่องโหว่ที่ร้ายที่สุด
+await handleEvent({ type: "postback", postback: { data: `act=acc&v=ok&u=${OUTSIDER}` },
+                    source: { userId: OUTSIDER }, replyToken: "t" });
+assert.equal(L.accessStatus(OUTSIDER), "pending", "คนนอกอนุมัติตัวเองไม่ได้");
+await handleEvent({ type: "postback", postback: { data: `act=acc&v=ok&u=${OUTSIDER}` },
+                    source: { userId: FRIEND }, replyToken: "t" });
+assert.equal(L.accessStatus(OUTSIDER), "pending", "คนที่มีสิทธิ์แต่ไม่ใช่แอดมินก็อนุมัติไม่ได้");
+ok("อนุมัติได้เฉพาะแอดมิน — ยิง postback เองไม่ผ่าน");
+
+// 4) แอดมินอนุมัติ → ใช้งานได้ทันที ไม่ต้อง restart
+grab();
+await handleEvent({ type: "postback", postback: { data: `act=acc&v=ok&u=${OUTSIDER}` },
+                    source: { userId: ME }, replyToken: "t" });
+sent = grab();
+assert.equal(L.accessStatus(OUTSIDER), "approved");
+assert.ok(sent.some((s) => s.url.includes("/push") && s.body?.to === OUTSIDER),
+  "ต้องแจ้งผลกลับไปหาเจ้าตัว");
+await fire(msg(OUTSIDER));
+assert.ok(L.getUser(OUTSIDER), "อนุมัติแล้วต้องใช้งานได้ทันที");
+ok("แอดมินอนุมัติ → ใช้ได้ทันที ไม่ต้องแก้ .env / restart");
+
+// 5) ปฏิเสธแล้วขอใหม่ไม่ได้ — ไม่งั้นสแปมแอดมินได้ไม่รู้จบ
+const SPAM = "Uwhitelist00000000000000000009";
+L.requestAccess(SPAM);
+L.decideAccess(SPAM, "rejected", ME);
+grab();
+await handleEvent({ type: "postback", postback: { data: "act=req" },
+                    source: { userId: SPAM }, replyToken: "t" });
+assert.equal(pushes(grab()).length, 0,
+  "คนที่ถูกปฏิเสธกดขอใหม่ต้องไม่ไปกวนแอดมิน");
+assert.equal(L.accessStatus(SPAM), "rejected", "สถานะต้องไม่ถูกรีเซ็ตกลับเป็น pending");
+ok("ถูกปฏิเสธแล้วขอซ้ำไม่ได้ — กันสแปมแอดมิน");
 
 console.log(`\nwhitelist.test: ${pass}/${pass} ผ่าน ✅`);

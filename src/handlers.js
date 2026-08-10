@@ -121,6 +121,85 @@ const settingsCard = (userId) => {
   });
 };
 
+// ---------- สิทธิ์ใช้งาน ----------
+
+/** เปิดโหมดจำกัดสิทธิ์อยู่หรือเปล่า — ไม่ตั้งอะไรเลย = เปิดให้ทุกคนเหมือนเดิม */
+const isGated = () => config.adminUsers.size > 0 || config.allowedUsers.size > 0;
+const isAdmin = (userId) => config.adminUsers.has(userId);
+/** แอดมินและรายชื่อใน .env ใช้ได้เสมอ · ที่เหลือดูจากตาราง access */
+const isAllowed = (userId) =>
+  isAdmin(userId) || config.allowedUsers.has(userId) || L.accessStatus(userId) === "approved";
+
+/** การ์ดที่คนยังไม่มีสิทธิ์ได้รับ — เนื้อหาเปลี่ยนตามสถานะคำขอ */
+function blockedCards(userId) {
+  const st = L.accessStatus(userId);
+  if (st === "pending") {
+    return card({
+      title: "ส่งคำขอแล้ว", emoji: "⏳", tone: "info",
+      text: "รอผู้ดูแลอนุมัติอยู่ครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
+      altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
+    });
+  }
+  if (st === "rejected") {
+    // ไม่ให้กดขอซ้ำ — ไม่งั้นแอดมินโดนสแปมและโควตา push หมด
+    return card({
+      title: "ไม่ได้รับสิทธิ์", emoji: "🔒", tone: "warn",
+      text: "ผู้ดูแลยังไม่อนุมัติคำขอของคุณครับ ติดต่อผู้ดูแลโดยตรงได้",
+      altText: "ไม่ได้รับสิทธิ์ใช้งาน",
+    });
+  }
+  return [
+    card({
+      title: "บอทส่วนตัว", emoji: "🔒", tone: "info",
+      text: "บอทตัวนี้เปิดให้เฉพาะผู้ที่ได้รับอนุญาตครับ\n\n"
+          + "กดปุ่มด้านล่างเพื่อขอสิทธิ์ หรือส่งรหัสในข้อความถัดไปให้ผู้ดูแลโดยตรง",
+      actions: [{ label: "🙋 ขอสิทธิ์ใช้งาน", data: "act=req", primary: true }],
+      altText: "บอทตัวนี้เปิดให้เฉพาะผู้ที่ได้รับอนุญาต",
+    }),
+    // ID เป็นข้อความธรรมดาใบแยก — ตัวอักษรใน Flex คัดลอกไม่ได้
+    { type: "text", text: userId },
+  ];
+}
+
+/** การ์ดแจ้งแอดมินว่ามีคนขอสิทธิ์ */
+const requestCard = (userId) => card({
+  title: "มีคนขอสิทธิ์ใช้งาน", emoji: "🙋", tone: "warn",
+  rows: [{ label: "LINE ID", value: `…${userId.slice(-8)}` }],
+  text: "อนุมัติแล้วเขาจะใช้บอทได้ทันที",
+  actions: [
+    [{ label: "✅ อนุมัติ", data: `act=acc&v=ok&u=${userId}`, primary: true },
+     { label: "❌ ปฏิเสธ", data: `act=acc&v=no&u=${userId}` }],
+  ],
+  altText: `มีคนขอสิทธิ์ใช้งาน (…${userId.slice(-8)})`,
+});
+
+/**
+ * คนนอกกดปุ่ม "ขอสิทธิ์"
+ *
+ * push หาแอดมิน **เฉพาะตอนเป็นคำขอใหม่จริง ๆ** (requestAccess คืน true)
+ * กดซ้ำไม่ push ซ้ำ ไม่งั้นคนเดียวเผาโควตา 300/เดือนหมดได้
+ * โควตาหมดก็ยังบันทึกคำขอไว้ — แอดมินพิมพ์ "คำขอ" มาดูเองได้
+ */
+async function handleAccessRequest(event, userId) {
+  const isNew = L.requestAccess(userId);
+  if (isNew) {
+    console.log(`[ขอสิทธิ์] ${userId}`);
+    if (quota().left > 0) {
+      for (const admin of config.adminUsers) {
+        try { await pushTo(admin, requestCard(userId)); L.logPush(admin, "access"); }
+        catch (err) { console.error(`[แจ้งแอดมินไม่ได้] ${err.message}`); }
+      }
+    } else {
+      console.warn("[ขอสิทธิ์] โควตา push หมด — แอดมินต้องพิมพ์ “คำขอ” มาดูเอง");
+    }
+  }
+  return respond(event, card({
+    title: isNew ? "ส่งคำขอแล้ว" : "ส่งคำขอไปก่อนหน้านี้แล้ว", emoji: "⏳", tone: "info",
+    text: "รอผู้ดูแลอนุมัติครับ ได้ผลแล้วผมจะแจ้งกลับมาเอง",
+    altText: "ส่งคำขอแล้ว รอผู้ดูแลอนุมัติ",
+  }));
+}
+
 // ---------- ส่งข้อความ ----------
 
 /** ส่งข้อความกลับ: ลอง reply ก่อน (ฟรี) ถ้า token ตายแล้วค่อย push */
@@ -486,6 +565,43 @@ async function handlePostback(event) {
     L.setPref(userId, "weekly", on ? "off" : "on");
     return respond(event, settingsCard(userId));
   }
+  // --- แอดมินตัดสินคำขอ ---
+  if (act === "acc") {
+    // ⚠️ ต้องเช็คสิทธิ์ที่นี่ให้ได้ ไม่งั้นใครก็ยิง postback มาอนุมัติตัวเองได้
+    // (ผู้ใช้ที่ได้รับอนุมัติแล้วก็ไม่มีสิทธิ์อนุมัติคนอื่น — แอดมินเท่านั้น)
+    if (!isAdmin(userId)) return;
+    const target = p.get("u");
+    const okv = p.get("v") === "ok";
+    if (!target || !L.decideAccess(target, okv ? "approved" : "rejected", userId)) {
+      return respond(event, card({
+        title: "ไม่พบคำขอนี้", emoji: "❓", tone: "warn",
+        text: "อาจถูกตัดสินไปแล้ว หรือผู้ใช้ยกเลิกไป",
+        actions: [{ label: "📋 ดูคำขอที่ค้าง", text: "คำขอ" }],
+      }));
+    }
+    // แจ้งเจ้าตัว — ถ้าโควตาหมดก็ข้าม เขาจะรู้เองตอนทักบอทครั้งต่อไป
+    if (quota().left > 0) {
+      try {
+        await pushTo(target, card({
+          title: okv ? "ได้รับสิทธิ์แล้ว" : "ไม่ได้รับสิทธิ์",
+          emoji: okv ? "🎉" : "🔒", tone: okv ? "success" : "warn",
+          text: okv ? "เริ่มใช้งานได้เลยครับ ส่งรูปสลิปหรือพิมพ์ “ช่วยเหลือ” ดูวิธีใช้"
+                    : "ผู้ดูแลไม่อนุมัติคำขอของคุณครับ",
+          altText: okv ? "ได้รับสิทธิ์ใช้งานแล้ว" : "ไม่ได้รับสิทธิ์ใช้งาน",
+        }));
+        L.logPush(target, "access");
+      } catch (err) { console.error(`[แจ้งผลไม่ได้] ${err.message}`); }
+    }
+    const left = L.accessList("pending").length;
+    return respond(event, card({
+      title: okv ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว", emoji: okv ? "✅" : "🚫",
+      tone: okv ? "success" : "neutral",
+      rows: [{ label: "ผู้ใช้", value: `…${target.slice(-8)}` },
+             { label: "คำขอที่ค้าง", value: left ? `${left} รายการ` : "ไม่มีแล้ว" }],
+      actions: left ? [{ label: "📋 ดูคำขอที่ค้าง", text: "คำขอ", primary: true }] : [],
+    }));
+  }
+
   if (act === "list") {
     return respond(event, listMessage(userId, { d: p.get("d"), c: p.get("c"), s: p.get("s") }));
   }
@@ -857,6 +973,40 @@ async function handleText(event) {
     if (!L.hasConsent(userId)) return respond(event, consentCard());
     return respond(event, exportCard(userId));
   }
+  // --- คำสั่งของแอดมิน ---
+  // ทางถอยเวลาโควตา push หมดจนแจ้งเตือนไม่ออก — ดึงมาดูเองได้เสมอ
+  if (isAdmin(userId) && /^(คำขอ|requests?)$/i.test(text)) {
+    const pend = L.accessList("pending");
+    if (!pend.length) {
+      return respond(event, card({
+        title: "ไม่มีคำขอค้าง", emoji: "✅", tone: "success",
+        rows: [{ label: "ผู้ใช้ที่อนุมัติแล้ว", value: `${L.accessList("approved").length} คน` }],
+        text: "คนที่ยังไม่มีสิทธิ์จะกดขอเข้ามาเอง แล้วผมจะแจ้งคุณทันที",
+        actions: [{ label: "👥 ดูผู้ใช้ทั้งหมด", text: "ผู้ใช้" }],
+      }));
+    }
+    return respond(event, pend.slice(0, 5).map((r) => requestCard(r.line_user_id)));
+  }
+
+  if (isAdmin(userId) && /^(ผู้ใช้|users?)$/i.test(text)) {
+    const app = L.accessList("approved"), rej = L.accessList("rejected");
+    return respond(event, card({
+      title: "ผู้ใช้ที่มีสิทธิ์", emoji: "👥", tone: "info",
+      rows: [
+        { label: "จาก .env", value: `${config.adminUsers.size + config.allowedUsers.size} คน (แอดมิน/ถาวร)` },
+        { label: "อนุมัติในแชท", value: `${app.length} คน` },
+        { label: "ปฏิเสธไป", value: `${rej.length} คน` },
+      ],
+      // ถอนสิทธิ์ = ตั้งเป็น rejected ซึ่งทำได้จากปุ่มในการ์ดคำขอ
+      // คนที่มาจาก .env ถอนจากในแชทไม่ได้ ต้องแก้ไฟล์ — ตั้งใจให้เป็นแบบนั้น
+      notes: app.map((r) => `…${r.line_user_id.slice(-8)}` +
+                            (r.display_name ? ` (${r.display_name})` : "")),
+      text: app.length ? "" : "ยังไม่มีใครถูกอนุมัติจากในแชท",
+      actions: [{ label: "📋 ดูคำขอที่ค้าง", text: "คำขอ" }],
+      altText: `ผู้ใช้ที่มีสิทธิ์ ${app.length} คน`,
+    }));
+  }
+
   if (/^(ตั้งค่า|settings)$/i.test(text)) {
     if (!L.hasConsent(userId)) return respond(event, consentCard());
     return respond(event, settingsCard(userId));
@@ -920,32 +1070,29 @@ async function handleText(event) {
 export async function handleEvent(event) {
   const userId = event.source?.userId;
 
-  // --- whitelist ---
+  // --- ควบคุมสิทธิ์ใช้งาน ---
   //
   // ตรวจ **ก่อน** ensureUser() เพื่อไม่ให้คนนอกได้แถวใน DB ด้วยซ้ำ และก่อน rate limit
   // เพราะไม่มีเหตุผลจะจ่ายงานอะไรให้คนที่ไม่ได้รับอนุญาต
   //
-  // ไม่มี userId ก็บล็อก (แชทกลุ่ม/ห้อง) — บอทส่วนตัวไม่ควรทำงานในกลุ่มอยู่แล้ว
-  if (config.allowedUsers.size && !(userId && config.allowedUsers.has(userId))) {
-    // log ID ที่ถูกปฏิเสธไว้เสมอ — ถ้าเจ้าของเผลอใส่ ID ผิดจนล็อกตัวเองออก
-    // บรรทัดนี้คือทางเดียวที่จะรู้ว่า ID จริงคืออะไร (`docker compose logs bot`)
-    console.warn(`[ปฏิเสธ] ไม่อยู่ใน ALLOWED_USERS: ${userId ?? "(ไม่มี userId — กลุ่ม/ห้อง)"}`);
-    if (event.replyToken) {
-      return respond(event, [
-        card({
-          title: "บอทส่วนตัว", emoji: "🔒", tone: "info",
-          text: "ขออภัยครับ บอทตัวนี้เปิดให้เฉพาะผู้ใช้ที่กำหนดไว้เท่านั้น" +
-                (userId ? "\n\nถ้าต้องการใช้งาน ส่งรหัสในข้อความถัดไปให้เจ้าของบอทครับ" : ""),
-          altText: "บอทตัวนี้เปิดให้เฉพาะผู้ใช้ที่กำหนดไว้",
-        }),
-        // ส่ง ID เป็น **ข้อความธรรมดาใบแยก** ไม่ใช่ใส่ในการ์ด
-        // ตัวอักษรใน Flex เลือก/คัดลอกไม่ได้ ผู้ใช้จึงต้องพิมพ์ตามทีละตัว 33 ตัว
-        // ข้อความธรรมดากดค้าง → "คัดลอก" ได้ทั้งก้อน และในใบนี้มีแต่ ID ล้วน ๆ
-        // จึงคัดลอกมาแล้ววางต่อท้าย ALLOWED_USERS ได้เลยโดยไม่ต้องตัดอะไรทิ้ง
-        ...(userId ? [{ type: "text", text: userId }] : []),
-      ]);
+  // ไม่ตั้งทั้ง ADMIN_USERS และ ALLOWED_USERS = เปิดให้ทุกคน (ค่าเริ่มต้นเดิม)
+  if (isGated()) {
+    // ไม่มี userId ก็บล็อก (แชทกลุ่ม/ห้อง) — บอทส่วนตัวไม่ควรทำงานในกลุ่มอยู่แล้ว
+    if (!userId) {
+      console.warn("[ปฏิเสธ] ไม่มี userId — กลุ่ม/ห้อง");
+      return;
     }
-    return;
+    if (!isAllowed(userId)) {
+      // log ID ที่ถูกปฏิเสธไว้เสมอ — ถ้าเจ้าของเผลอใส่ ID ผิดจนล็อกตัวเองออก
+      // บรรทัดนี้คือทางเดียวที่จะรู้ว่า ID จริงคืออะไร (`docker compose logs bot`)
+      console.warn(`[ปฏิเสธ] ไม่มีสิทธิ์: ${userId}`);
+      // ปุ่ม "ขอสิทธิ์" ยังต้องกดได้ทั้งที่ยังไม่มีสิทธิ์ — ไม่งั้นวนไม่จบ
+      if (event.type === "postback" && new URLSearchParams(event.postback?.data ?? "").get("act") === "req") {
+        return handleAccessRequest(event, userId);
+      }
+      if (event.replyToken) return respond(event, blockedCards(userId));
+      return;
+    }
   }
 
   if (userId) {

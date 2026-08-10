@@ -33,6 +33,53 @@ export function getUser(userId) {
   return db().prepare("SELECT * FROM users WHERE line_user_id = ?").get(userId) ?? null;
 }
 
+// ---------- สิทธิ์ใช้งาน (แอดมินอนุมัติจากในแชท) ----------
+
+/** null = ไม่เคยขอ · 'pending' | 'approved' | 'rejected' */
+export function accessStatus(userId) {
+  return db().prepare("SELECT status FROM access WHERE line_user_id = ?").get(userId)?.status ?? null;
+}
+
+/**
+ * บันทึกคำขอ — คืน true เฉพาะตอนที่เป็น "คำขอใหม่จริง ๆ"
+ *
+ * ต้องแยกให้ออก เพราะฝั่งเรียกใช้เอาผลนี้ไปตัดสินใจว่าจะ push หาแอดมินไหม
+ * ถ้ากดขอซ้ำแล้ว push ทุกครั้ง คนเดียวก็เผาโควตา 300/เดือนหมดได้
+ * ถูกปฏิเสธไปแล้วก็ขอใหม่ไม่ได้ ต้องให้แอดมินปลดให้เอง
+ */
+export function requestAccess(userId) {
+  const cur = accessStatus(userId);
+  if (cur) return false;
+  db().prepare(`INSERT INTO access (line_user_id, status, requested_at) VALUES (?, 'pending', ?)`)
+    .run(userId, nowIso());
+  return true;
+}
+
+/** แอดมินตัดสิน — คืน false ถ้าไม่มีคำขอนั้นอยู่ (กัน postback ปลอม) */
+export function decideAccess(userId, status, adminId) {
+  if (!["approved", "rejected"].includes(status)) return false;
+  return db().prepare(`
+    UPDATE access SET status = ?, decided_at = ?, decided_by = ?
+    WHERE line_user_id = ?`).run(status, nowIso(), adminId, userId).changes > 0;
+}
+
+/** เพิ่มสิทธิ์ให้ตรง ๆ โดยไม่ต้องรอให้เขากดขอ (แอดมินรู้ ID อยู่แล้ว) */
+export function grantAccess(userId, adminId) {
+  db().prepare(`
+    INSERT INTO access (line_user_id, status, requested_at, decided_at, decided_by)
+    VALUES (?, 'approved', ?, ?, ?)
+    ON CONFLICT (line_user_id) DO UPDATE SET status='approved', decided_at=?, decided_by=?`)
+    .run(userId, nowIso(), nowIso(), adminId, nowIso(), adminId);
+  return true;
+}
+
+export function accessList(status) {
+  return db().prepare(`
+    SELECT a.*, u.display_name FROM access a
+    LEFT JOIN users u ON u.line_user_id = a.line_user_id
+    WHERE a.status = ? ORDER BY COALESCE(a.decided_at, a.requested_at) DESC`).all(status);
+}
+
 export function ensureUser(userId, displayName = null) {
   db().prepare(`INSERT INTO users (line_user_id, display_name, created_at) VALUES (?, ?, ?)
                 ON CONFLICT (line_user_id) DO UPDATE SET display_name = COALESCE(?, display_name)`)

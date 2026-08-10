@@ -30,6 +30,15 @@ export const config = {
   allowedUsers: new Set(
     (process.env.ALLOWED_USERS || "").split(",").map((s) => s.trim()).filter(Boolean)),
 
+  // แอดมิน — อนุมัติคำขอของคนอื่นได้จากในแชท และใช้บอทได้เสมอ
+  //
+  // ไม่ตั้ง ADMIN_USERS จะถอยไปใช้ ALLOWED_USERS แทน เพราะคนที่ใส่ ID ตัวเอง
+  // ไว้ใน .env คือเจ้าของเครื่องอยู่แล้ว — จะได้ไม่ต้องมาตั้งค่าซ้ำสองที่
+  // แอดมินต้องมาจาก .env เท่านั้น **ห้ามตั้งจากในแชท** ไม่งั้นใครแฮ็กแชทได้ก็ตั้งตัวเองเป็นแอดมิน
+  adminUsers: new Set(
+    (process.env.ADMIN_USERS || process.env.ALLOWED_USERS || "")
+      .split(",").map((s) => s.trim()).filter(Boolean)),
+
   // ส่งออก CSV — **ปิดไว้เป็นค่าเริ่มต้น** เปิดด้วย EXPORT_CSV=on
   //
   // แยกจาก PUBLIC_URL ตั้งใจ: PUBLIC_URL ถูกตั้งเพราะเหตุผลอื่นได้ (webhook, LIFF)
