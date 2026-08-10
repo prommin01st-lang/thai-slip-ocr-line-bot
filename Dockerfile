@@ -17,6 +17,10 @@ COPY src/ ./src/
 # ที่เหลือใน scripts/ ตั้งใจไม่เอาเข้า — รันจากเครื่อง dev ครั้งเดียวพอ (rich menu ฯลฯ)
 COPY scripts/weekly.mjs scripts/backup.mjs ./scripts/
 
+# มาสคอตต้องอยู่ใน image — LINE ไปดึงรูปจาก URL เองตอนแสดงการ์ด
+# (ที่เหลือใน assets/ ถูก .dockerignore กันไว้ ดูเหตุผลในไฟล์นั้น)
+COPY assets/Mascot/ ./assets/Mascot/
+
 # data/ เก็บ SQLite — ต้องเป็นของ user ที่รัน ไม่งั้นเขียนไม่ได้
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node
