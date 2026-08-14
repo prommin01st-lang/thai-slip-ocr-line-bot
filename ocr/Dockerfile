@@ -8,8 +8,10 @@ FROM python:3.12-slim
 #   libgomp1      → paddlepaddle: "libgomp.so.1: cannot open shared object file"
 #   libgl1        → opencv (dependency ของ paddleocr): "libGL.so.1: ..."
 #   libglib2.0-0  → opencv เช่นกัน
+#   poppler-utils → pdftotext/pdftoppm สำหรับ /parse-pdf (~15 MB)
+#                   ใช้ดึงชั้นข้อความจาก PDF ก่อน แล้วค่อยตกไป OCR ถ้าไม่มี
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 libgl1 libglib2.0-0 curl \
+        libgomp1 libgl1 libglib2.0-0 curl poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ocr_paddle
+import pdf_text
 from slip_parser import parse_slip
 from payslip_parser import parse_payslip
 from receipt_parser import parse_receipt
@@ -45,7 +46,11 @@ TOKEN = os.environ.get("SLIP_OCR_TOKEN", "").strip()
 # PaddleOCR ไม่ thread-safe → worker เดียว (เหมือน serve.py ที่ serialize GPU)
 _EXEC = ThreadPoolExecutor(max_workers=1)
 
-ROUTES = ["/parse", "/parse-batch", "/slip", "/payslip", "/receipt", "/ocr"]
+ROUTES = ["/parse", "/parse-batch", "/parse-pdf", "/slip", "/payslip", "/receipt", "/ocr"]
+
+# ข้อความดิบที่ส่งกลับไปให้ฝั่งบอทต่อหน้า — พอสำหรับ statement หนึ่งหน้าเต็ม ๆ
+# แต่ไม่ปล่อยให้ response บวมจน LINE webhook ฝั่งโน้นต้องแบกฟรี ๆ
+MAX_TEXT_CHARS = 8000
 
 
 class OcrTimeout(Exception):
@@ -93,9 +98,8 @@ def _authorized(headers) -> bool:
     return hmac.compare_digest(got, TOKEN)
 
 
-def _parse_one(path: str) -> dict:
-    """OCR **รอบเดียว** → จำแนกชนิด → parser ที่ถูก (ต่างจาก serve.py ที่ OCR 2 รอบ)"""
-    text = ocr_guarded(path)
+def _parse_text(text: str) -> dict:
+    """ข้อความ → จำแนกชนิด → parser ที่ถูก (แยกจาก _parse_one เพราะ PDF ได้ข้อความมาฟรี)"""
     kind = classify(text)
     if kind == "payslip":
         data = parse_payslip(text)
@@ -106,6 +110,11 @@ def _parse_one(path: str) -> dict:
     data.pop("raw", None)
     data["doc_type"] = kind
     return data
+
+
+def _parse_one(path: str) -> dict:
+    """OCR **รอบเดียว** → จำแนกชนิด → parser ที่ถูก (ต่างจาก serve.py ที่ OCR 2 รอบ)"""
+    return _parse_text(ocr_guarded(path))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -138,6 +147,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/parse-batch":
             return self._batch(body)
+        if route == "/parse-pdf":
+            return self._pdf(body)
 
         tmp = None
         try:
@@ -158,6 +169,51 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)
+
+    def _pdf(self, body):
+        """
+        PDF → ผลของ **ทุกหน้า** (หน้าละเอกสาร)
+
+        คืน `text` ดิบมาด้วยเสมอ เพราะ PDF ที่ธนาคารส่งมาบางฉบับเป็น statement
+        (หลายรายการในหน้าเดียว) ซึ่ง parser สลิปอ่านไม่ออกโดยธรรมชาติ — ฝั่งบอท
+        จะได้เอาข้อความไปลอง parser รายการบิลต่อได้เอง แทนที่จะจบลงว่า "อ่านไม่ออก"
+        """
+        if not pdf_text.available():
+            return self._send(501, {"error": "เครื่องนี้ไม่มี poppler-utils — ลง apt install poppler-utils"})
+        try:
+            req = json.loads(body or b"{}")
+        except ValueError:
+            return self._send(400, {"error": "ต้องเป็น JSON"})
+        b64 = req.get("pdf_b64")
+        if not b64:
+            return self._send(400, {"error": "ต้องมี 'pdf_b64'"})
+
+        fd, path = tempfile.mkstemp(suffix=".pdf")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(base64.b64decode(b64))
+            pages = pdf_text.pages_for_parsing(path, ocr_guarded)
+            out = []
+            for p in pages:
+                data = _parse_text(p["text"])
+                out.append({
+                    "page": p["page"],
+                    # บอกว่าค่านี้มาจากชั้นข้อความหรือ OCR — ต่างกันมากเรื่องความน่าเชื่อถือ
+                    # (ชั้นข้อความคือตัวเลขจริงจากธนาคาร ไม่ใช่การอ่านภาพ)
+                    "source": p["source"],
+                    **data,
+                    "text": (p["text"] or "")[:MAX_TEXT_CHARS],
+                })
+            return self._send(200, {"count": len(out), "pages": out})
+        except pdf_text.PdfError as e:
+            return self._send(400, {"error": str(e)})
+        except OcrTimeout as e:
+            return self._send(504, {"error": str(e)})
+        except Exception as e:
+            return self._send(400, {"error": str(e)})
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
 
     def _batch(self, body):
         try:

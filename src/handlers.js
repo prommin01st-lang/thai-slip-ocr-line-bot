@@ -20,6 +20,8 @@ import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
 import { labelOf, isCategory } from "./categories.js";
 import { parseSheetId } from "./sheets.js";
 import { syncUser } from "./sheetSync.js";
+import { parseBill, MAX_ROWS } from "./billText.js";
+import * as pending from "./pending.js";
 import { parseEntries } from "./nlu.js";
 import { nowLocal } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
@@ -33,10 +35,12 @@ const DIR_LABEL = { in: "รายรับ", out: "รายจ่าย", unkn
 
 const helpCard = () => card({
   title: "SlipingMan", emoji: "🧾", tone: "info",
-  text: "ส่งรูปสลิป ใบเสร็จ หรือใบเงินเดือนเข้ามาได้เลย\nหรือพิมพ์สั้น ๆ เช่น “กาแฟ 60”",
+  text: "ส่งรูปสลิป ใบเสร็จ หรือใบเงินเดือนเข้ามาได้เลย (ทีละหลายใบก็ได้)\nหรือพิมพ์สั้น ๆ เช่น “กาแฟ 60”",
   rows: [
     { label: "จดรายจ่าย", value: "พิมพ์ “กาแฟ 60”" },
+    { label: "หลายรายการ", value: "พิมพ์ “กาแฟ 60, ข้าว 50”" },
     { label: "จดรายรับ", value: "พิมพ์ “ได้เงินเดือน 30000”" },
+    { label: "ส่งเป็นไฟล์", value: "PDF · CSV · TXT ก็อ่านให้ได้" },
     { label: "อย่างอื่น", value: "กดปุ่มด้านล่าง / เมนูล่างจอ" },
   ],
   actions: [
@@ -394,12 +398,17 @@ async function showLoading(userId, seconds = 15) {
   } catch { /* กลุ่ม/ห้องแชทไม่รองรับ */ }
 }
 
-/** ดึงไฟล์รูปจาก LINE → Buffer */
-async function downloadImage(message) {
+/**
+ * ดึงเนื้อไฟล์จาก LINE → Buffer (ใช้ได้ทั้งรูปและไฟล์แนบ)
+ *
+ * เพดานขนาดต้องเช็ค**ระหว่างสตรีม** ไม่ใช่หลังโหลดจบ — ไฟล์ 300MB ที่ LINE ยอมให้ส่ง
+ * จะกินหน่วยความจำจนคอนเทนเนอร์ (จำกัด 256MB) ตายก่อนที่เราจะได้ตรวจอะไร
+ */
+async function downloadContent(message, maxBytes = config.maxImageBytes, what = "รูป") {
   if (message.contentProvider?.type === "external") {
     const url = message.contentProvider.originalContentUrl;
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`ดึงรูปจาก external provider ไม่ได้ (${res.status})`);
+    if (!res.ok) throw new Error(`ดึง${what}จาก external provider ไม่ได้ (${res.status})`);
     return Buffer.from(await res.arrayBuffer());
   }
   const stream = await blob.getMessageContent(message.id);
@@ -407,14 +416,16 @@ async function downloadImage(message) {
   let size = 0;
   for await (const chunk of stream) {
     size += chunk.length;
-    if (size > config.maxImageBytes) {
+    if (size > maxBytes) {
       stream.destroy();
-      throw new Error(`รูปใหญ่เกิน ${Math.round(config.maxImageBytes / 1024 / 1024)}MB`);
+      throw new Error(`${what}ใหญ่เกิน ${Math.round(maxBytes / 1024 / 1024)}MB`);
     }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
 }
+
+const downloadImage = (message) => downloadContent(message, config.maxImageBytes, "รูป");
 
 /**
  * รายการอยู่คนละเดือนกับปัจจุบันไหม → คืนการ์ดถามว่าจะลงเดือนไหน (ไม่งั้น null)
@@ -690,6 +701,253 @@ export function batchSlipCard(userId, total, saved, skipped, dup) {
   });
 }
 
+// ---------- ไฟล์แนบ (PDF / ข้อความ) ----------
+
+const IS_PDF = /\.pdf$/i;
+const IS_TEXT = /\.(txt|csv|tsv|text)$/i;
+
+/**
+ * ตัวอักษรไทยในไฟล์ที่ไม่ใช่ UTF-8
+ *
+ * ไฟล์ CSV ที่ export จาก Excel ภาษาไทยบนวินโดวส์ยังเป็น **windows-874 (TIS-620)**
+ * อยู่มาก ถ้า decode เป็น UTF-8 ตรง ๆ จะได้ตัวยึกยือทั้งไฟล์ แล้ว parser จะอ่าน
+ * ชื่อรายการไม่ออกทั้งก้อน (ตัวเลขยังถูก — เป็นความพังที่มองข้ามง่ายมาก)
+ *
+ * ตรวจด้วยจำนวนตัวแทนที่ (U+FFFD) ที่ decoder ใส่ให้เมื่อเจอไบต์ที่ไม่ใช่ UTF-8
+ */
+function decodeText(buf) {
+  const utf8 = new TextDecoder("utf-8").decode(buf);
+  const bad = (utf8.match(/�/g) ?? []).length;
+  if (bad > Math.max(2, utf8.length * 0.005)) {
+    try {
+      return new TextDecoder("windows-874").decode(buf);
+    } catch { /* build ที่ ICU ไม่เต็มจะไม่มี codec นี้ — ถอยไปใช้ UTF-8 */ }
+  }
+  return utf8;
+}
+
+const unsupportedFileCard = (name) => card({
+  title: "ยังอ่านไฟล์แบบนี้ไม่ได้", emoji: "📎", tone: "warn",
+  rows: [{ label: "ไฟล์ที่ส่งมา", value: name || "(ไม่มีชื่อ)" }],
+  text: "ตอนนี้รับได้แบบนี้ครับ",
+  notes: [
+    "PDF — สลิป/ใบเสร็จ/statement จากแอปธนาคาร",
+    "CSV / TSV — ตารางรายการ (มีคอลัมน์วันที่ รายละเอียด จำนวน)",
+    "TXT — บรรทัดละรายการ เช่น “กาแฟ 60”",
+    "รูปภาพ — ส่งเป็นรูปได้เลย ไม่ต้องแนบเป็นไฟล์",
+  ],
+  altText: "ยังอ่านไฟล์ชนิดนี้ไม่ได้",
+});
+
+async function handleFile(event) {
+  const userId = event.source?.userId;
+  const name = event.message?.fileName ?? "";
+  const size = Number(event.message?.fileSize ?? 0);
+
+  if (!IS_PDF.test(name) && !IS_TEXT.test(name)) {
+    return respond(event, unsupportedFileCard(name));
+  }
+  if (!L.hasConsent(userId)) {
+    return respond(event, consentCard(`ได้รับไฟล์ “${name}” แล้ว แต่ยังบันทึกให้ไม่ได้`));
+  }
+
+  // LINE บอกขนาดมาใน event อยู่แล้ว → ปฏิเสธได้ตั้งแต่ก่อนโหลด ไม่เสียแบนด์วิดท์เปล่า
+  const cap = IS_PDF.test(name) ? config.maxPdfBytes : config.maxTextBytes;
+  if (size > cap) {
+    return respond(event, card({
+      title: "ไฟล์ใหญ่เกินไป", emoji: "📎", tone: "warn",
+      rows: [{ label: "ขนาดไฟล์", value: `${(size / 1024 / 1024).toFixed(1)} MB` },
+             { label: "รับได้ไม่เกิน", value: `${Math.round(cap / 1024 / 1024)} MB` }],
+      text: "ลองแบ่งไฟล์ให้เล็กลงแล้วส่งใหม่ครับ",
+    }));
+  }
+
+  try {
+    return IS_PDF.test(name)
+      ? await handlePdfFile(event, userId, name)
+      : await handleTextFile(event, userId, name);
+  } catch (err) {
+    console.error(`[อ่านไฟล์ล้มเหลว] ${name}: ${err.stack || err.message}`);
+    const msg = err instanceof ocr.OcrTimeoutError
+      ? "ไฟล์นี้ใช้เวลาอ่านนานเกินไป ลองแบ่งเป็นไฟล์เล็กลงครับ"
+      : err instanceof ocr.OcrUnavailableError
+        ? "ระบบอ่านเอกสารยังไม่พร้อม ลองใหม่อีกสักครู่นะครับ"
+        : err.message;
+    return respond(event, errorMessage(msg, [{ label: "❓ วิธีใช้", text: "ช่วยเหลือ" }]));
+  }
+}
+
+/**
+ * PDF → อ่านทีละหน้า
+ *
+ * **ไม่รวมเข้าชุดเดียวกับรูป** โดยตั้งใจ — PDF หนึ่งไฟล์มีหลายหน้าอยู่แล้ว จึงมี
+ * "การรวมผล" ในตัวและใช้การ์ดสรุปตัวเดียวกับสลิปหลายใบได้เลย ส่วนคนที่ส่ง PDF
+ * ก็มักส่งทีละไฟล์ ไม่ใช่เลือกทีละ 5 ไฟล์แบบเลือกรูปจากแกลเลอรี
+ *
+ * hash กันซ้ำผูกกับ **หน้า** ไม่ใช่ไฟล์ (`<hash>#p2`) — statement เดิมที่โหลดใหม่
+ * แล้วมีหน้าเพิ่ม จะได้บันทึกเฉพาะหน้าใหม่ ไม่ใช่ถูกปัดตกทั้งไฟล์
+ */
+async function handlePdfFile(event, userId, name) {
+  await showLoading(userId, 40);
+  const buffer = await downloadContent(event.message, config.maxPdfBytes, "PDF");
+  const fileHash = L.sha256(buffer);
+  const res = await enqueue(() => ocr.parsePdf(buffer));
+  const pages = res.pages ?? [];
+
+  const saved = [], skipped = [], leftover = [];
+  let dup = 0;
+  for (const p of pages) {
+    const { text, page, source, ...doc } = p;
+    const pageHash = `${fileHash}#p${page}`;
+    if (L.findDuplicate(userId, { imageSha256: pageHash, ref: doc.ref })) { dup++; continue; }
+    const rec = L.recordSlip(userId, doc, { imageSha256: pageHash });
+    if (rec.ok) { saved.push(rec); continue; }
+    skipped.push(SLIP_SKIP[rec.reason] ?? rec.reason);
+    // อ่านเป็นสลิปไม่ออกแต่มีข้อความ = น่าจะเป็น statement (หลายรายการในหน้าเดียว)
+    // ซึ่ง parser สลิปอ่านไม่ได้โดยธรรมชาติ — เก็บข้อความไว้ลองอีกทางแทนที่จะยอมแพ้
+    if (text && rec.reason !== "duplicate") leftover.push(text);
+  }
+
+  const messages = [];
+  if (saved.length || dup || !leftover.length) {
+    messages.push(batchSlipCard(userId, pages.length, saved, skipped, dup));
+  }
+  if (leftover.length) {
+    const bill = parseBill(leftover.join("\n"));
+    if (bill.entries.length >= 2) {
+      messages.push(importPreviewCard(userId, bill, `${name} (statement)`));
+    } else if (!messages.length) {
+      messages.push(card({
+        title: "อ่านไฟล์นี้ไม่ออก", emoji: "📄", tone: "warn",
+        rows: [{ label: "ไฟล์", value: name }, { label: "จำนวนหน้า", value: `${pages.length}` }],
+        text: "อ่านข้อความได้ แต่จับรูปแบบรายการไม่ได้ครับ\n"
+            + "ถ้าเป็นตารางรายการ ลองส่งเป็น CSV แทนจะแม่นกว่ามาก",
+      }));
+    }
+  }
+  try {
+    return await respond(event, messages);
+  } finally {
+    await notifyAfter(userId);
+  }
+}
+
+async function handleTextFile(event, userId, name) {
+  const buffer = await downloadContent(event.message, config.maxTextBytes, "ไฟล์");
+  const bill = parseBill(decodeText(buffer));
+
+  if (!bill.entries.length) {
+    return respond(event, card({
+      title: "ไม่เจอรายการในไฟล์นี้", emoji: "📄", tone: "warn",
+      rows: [{ label: "ไฟล์", value: name }],
+      text: "ลองตรวจว่ามีคอลัมน์จำนวนเงินอยู่ไหมครับ",
+      notes: [
+        "CSV: ต้องมีคอลัมน์จำนวนเงิน (มีวันที่/รายละเอียดด้วยจะดีที่สุด)",
+        "TXT: บรรทัดละรายการ เช่น “กาแฟ 60”",
+        ...bill.skipped.map((s) => `อ่านไม่ออก: ${s}`),
+      ],
+    }));
+  }
+  return respond(event, importPreviewCard(userId, bill, name));
+}
+
+// ---------- นำเข้า: พรีวิว → ยืนยัน ----------
+
+const IMPORT_PREVIEW_ROWS = 5;
+
+/**
+ * การ์ดพรีวิวก่อนนำเข้า — **ยังไม่เขียน DB สักแถว**
+ *
+ * ต่างจากสลิปตรงที่ไฟล์ข้อความไม่มีเลขอ้างอิงหรือ hash รูปให้กันซ้ำ และหนึ่งไฟล์
+ * มีได้เป็นร้อยรายการ ถ้าบันทึกทันทีแล้วส่งผิดไฟล์ ผู้ใช้ต้องไล่ลบทีละรายการ
+ * เป็นร้อยครั้ง ซึ่งเท่ากับกู้คืนไม่ได้จริง
+ */
+export function importPreviewCard(userId, bill, filename) {
+  const { entries, skipped, format, truncated } = bill;
+  pending.put(userId, { entries, filename });
+
+  const sum = (dir) => entries.filter((e) => e.direction === dir)
+    .reduce((a, e) => a + e.amountCents, 0);
+  const inC = sum("in"), outC = sum("out");
+  const dates = entries.map((e) => e.occurredAt).filter(Boolean).sort();
+
+  return card({
+    title: `พบ ${entries.length} รายการในไฟล์`, emoji: "📥", tone: "info",
+    rows: [
+      { label: "ไฟล์", value: filename },
+      ...(dates.length
+        ? [{ label: "ช่วงวันที่", value: dates[0].slice(0, 10) === dates[dates.length - 1].slice(0, 10)
+            ? dates[0].slice(0, 10)
+            : `${dates[0].slice(0, 10)} – ${dates[dates.length - 1].slice(0, 10)}` }]
+        : [{ label: "วันที่", value: "ไม่มีในไฟล์ — จะลงเป็นวันที่นำเข้า" }]),
+      ...(outC ? [{ label: "รวมรายจ่าย", value: L.fromCents(outC), strong: true }] : []),
+      ...(inC ? [{ label: "รวมรายรับ", value: L.fromCents(inC), strong: true }] : []),
+    ],
+    text: entries.slice(0, IMPORT_PREVIEW_ROWS)
+      .map((e) => `${e.direction === "in" ? "+" : "−"}${L.fromCents(e.amountCents)}  ${e.note ?? "(ไม่มีชื่อ)"}`)
+      .join("\n") + (entries.length > IMPORT_PREVIEW_ROWS ? `\n… และอีก ${entries.length - IMPORT_PREVIEW_ROWS} รายการ` : ""),
+    notes: [
+      format === "csv" ? "อ่านเป็นตาราง (CSV)" : "อ่านแบบบรรทัดละรายการ",
+      ...(truncated ? [`ไฟล์ยาวเกิน — อ่านแค่ ${MAX_ROWS} แถวแรก อีก ${truncated} แถวไม่ได้อ่าน`] : []),
+      ...(skipped.length ? [`อ่านไม่ออก ${skipped.length} บรรทัด: ${skipped.map((s) => `“${s}”`).join(" · ")}`] : []),
+      "ยังไม่ได้บันทึกอะไร — กดยืนยันก่อน",
+    ],
+    actions: [
+      { label: `✅ บันทึกทั้ง ${entries.length} รายการ`, data: "act=import", primary: true },
+      { label: "❌ ไม่เอา", data: "act=importx" },
+    ],
+    altText: `พบ ${entries.length} รายการในไฟล์ ${filename} — ยืนยันก่อนบันทึก`,
+  });
+}
+
+/** entry จากไฟล์ → รูปแบบที่ findDuplicate เข้าใจ (ใช้ยอด+เวลาเทียบแบบ fuzzy) */
+const asParsed = (e) => ({
+  amount: L.fromCents(e.amountCents),
+  date: e.occurredAt ? e.occurredAt.slice(0, 10) : null,
+  time: e.occurredAt?.length > 10 ? e.occurredAt.slice(11, 16) : null,
+});
+
+async function runImport(event, userId) {
+  const job = pending.take(userId);      // ดึงแล้วลบทันที — กดยืนยันซ้ำต้องไม่บันทึกสองรอบ
+  if (!job) {
+    return respond(event, card({
+      title: "ไม่มีไฟล์ที่รอยืนยันแล้ว", emoji: "⌛", tone: "warn",
+      text: "คำขอหมดอายุไปแล้ว (เก็บไว้ 10 นาที) ส่งไฟล์เข้ามาใหม่ได้เลยครับ",
+    }));
+  }
+
+  let saved = 0, dup = 0, failed = 0;
+  for (const e of job.entries) {
+    // กันซ้ำเท่าที่ทำได้: ยอดตรงและเวลาห่างไม่เกิน 2 นาที = รายการเดิม
+    // (ใช้ได้เฉพาะแถวที่มีวันที่ — ไฟล์ที่ไม่มีคอลัมน์วันที่จะกันซ้ำไม่ได้ ซึ่งบอกไว้บนการ์ดแล้ว)
+    if (e.occurredAt && L.findDuplicate(userId, { parsed: asParsed(e) })) { dup++; continue; }
+    const rec = L.recordEntry(userId, e, { occurredAt: e.occurredAt });
+    if (!rec.ok) { failed++; continue; }
+    saved++;
+    // หมวดจากไฟล์ต้องมาก่อนที่ระบบเดาเอง — ผู้ใช้จัดมาแล้วในไฟล์ต้นทาง
+    if (e.category) L.setCategory(userId, rec.txnId, e.category);
+  }
+
+  const left = L.countTxns(userId, { status: "pending" });
+  return respond(event, card({
+    title: saved ? `นำเข้า ${saved} รายการแล้ว` : "ไม่ได้นำเข้าอะไรเลย",
+    emoji: saved ? "📥" : "⚠️", tone: saved ? "success" : "warn",
+    rows: [
+      { label: "ไฟล์", value: job.filename },
+      { label: "บันทึกแล้ว", value: `${saved} รายการ`, strong: true },
+      ...(dup ? [{ label: "ซ้ำกับที่มีอยู่", value: `${dup} รายการ` }] : []),
+      ...(failed ? [{ label: "บันทึกไม่ได้", value: `${failed} รายการ` }] : []),
+    ],
+    text: dup ? "รายการที่ยอดและเวลาตรงกับของเดิมถูกข้ามให้ ไม่นับซ้ำ" : "",
+    actions: [
+      { label: "🧾 ดูรายการ", data: "act=list", primary: true },
+      ...(left ? [{ label: `📝 ตรวจยอด ${left} รายการ`, data: "act=list&s=pending" }] : []),
+      { label: "📊 ดูสรุป", data: "act=summary" },
+    ],
+    altText: `นำเข้า ${saved} รายการจาก ${job.filename}`,
+  }));
+}
+
 // ---------- รายการ ----------
 
 const LIST_LIMIT = 8;
@@ -936,6 +1194,16 @@ async function handlePostback(event) {
       ],
     }));
   }
+  // --- นำเข้าจากไฟล์ ---
+  if (act === "import") return runImport(event, userId);
+  if (act === "importx") {
+    pending.drop(userId);
+    return respond(event, card({
+      title: "ยกเลิกการนำเข้าแล้ว", emoji: "👌", tone: "neutral",
+      text: "ไม่ได้บันทึกอะไรลงไปครับ ส่งไฟล์ใหม่เข้ามาได้ตลอด",
+    }));
+  }
+
   if (act === "listcat") {
     return respond(event, categoryPickerBubble(L.categoryTotals(userId), L.fromCents));
   }
@@ -1512,7 +1780,10 @@ export async function handleEvent(event) {
 
   // จำกัดอัตราก่อนทำงานจริง — รูปแพงกว่าข้อความมาก (OCR ~8.5 วิ บน 2 cores)
   // ต้องปฏิเสธตั้งแต่ต้นทาง ไม่ใช่ปล่อยเข้าคิวแล้วให้ทุกคนรอ (queue.js คุมคนละเรื่อง)
-  const kind = event.type === "message" && event.message?.type === "image" ? "image" : "msg";
+  // ไฟล์แนบนับถังเดียวกับรูป — PDF หนึ่งไฟล์อาจต้อง OCR หลายหน้า แพงกว่ารูปใบเดียวอีก
+  const heavy = event.type === "message" &&
+    (event.message?.type === "image" || event.message?.type === "file");
+  const kind = heavy ? "image" : "msg";
   const rl = take(userId, kind);
   if (!rl.ok) {
     // เพิ่งเตือนไปเมื่อกี้ → เงียบ (ดู `quiet` ใน ratelimit.js)
@@ -1532,11 +1803,12 @@ export async function handleEvent(event) {
   if (event.type !== "message") return;
 
   if (event.message.type === "image") return handleImage(event);
+  if (event.message.type === "file") return withAlerts(handleFile);
   if (event.message.type === "text") return withAlerts(handleText);
 
   return respond(event, card({
-    title: "รับเฉพาะรูปและข้อความ", emoji: "📸", tone: "info",
-    text: "ส่งรูปสลิป หรือพิมพ์รายการเข้ามาได้เลยครับ",
+    title: "ยังอ่านข้อความแบบนี้ไม่ได้", emoji: "📸", tone: "info",
+    text: "ส่งรูปสลิป ไฟล์ PDF/CSV หรือพิมพ์รายการเข้ามาได้เลยครับ",
     actions: [{ label: "❓ วิธีใช้", text: "ช่วยเหลือ" }],
   }));
 }

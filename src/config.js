@@ -68,6 +68,13 @@ export const config = {
   // LINE ส่งรูปได้สูงสุด 10MB อยู่แล้ว — กันไว้อีกชั้นกัน OOM ฝั่งเรา
   maxImageBytes: Number(process.env.MAX_IMAGE_BYTES || 10 * 1024 * 1024),
 
+  // PDF: ต้องส่งเป็น base64 เข้า OCR service (โตขึ้น ~33%) และแต่ละหน้าที่ไม่มีชั้น
+  // ข้อความจะถูก OCR ทีละหน้า — 10MB คือ statement หนาที่สุดที่ยังตอบได้ในเวลาที่รับได้
+  maxPdfBytes: Number(process.env.MAX_PDF_BYTES || 10 * 1024 * 1024),
+  // ไฟล์ข้อความ/CSV: ทั้งไฟล์ถูกโหลดขึ้นหน่วยความจำแล้วแปลงเป็นสตริง
+  // 2MB ≈ หลายหมื่นบรรทัด ซึ่งเกินเพดาน MAX_ROWS ไปไกลอยู่แล้ว
+  maxTextBytes: Number(process.env.MAX_TEXT_BYTES || 2 * 1024 * 1024),
+
   googleSaEmail: saEmail,
   googleSaKey: saKey,
   // ไม่ตั้งคีย์ = ปุ่ม/คำสั่งเชื่อมชีตไม่โผล่เลย (ดีกว่าโผล่แล้วกดไม่ได้)

@@ -61,6 +61,16 @@ export function parseImage(buffer) {
   return post("/parse", { image_b64: buffer.toString("base64") }, config.ocrTimeoutMs);
 }
 
+/**
+ * PDF → ผลของทุกหน้า `{count, pages:[{page, source, text, ...ฟิลด์เอกสาร}]}`
+ *
+ * `source` บอกว่าหน้านั้นได้มาจากชั้นข้อความใน PDF หรือจาก OCR — ต่างกันมาก
+ * เพราะชั้นข้อความคือตัวเลขจริงจากธนาคาร ไม่ใช่การอ่านภาพ (แม่น 100% และเร็วกว่ามาก)
+ */
+export function parsePdf(buffer) {
+  return post("/parse-pdf", { pdf_b64: buffer.toString("base64") }, config.ocrTimeoutMs);
+}
+
 /** บังคับชนิดเอกสาร (ผู้ใช้กดเลือกจาก quick reply) */
 export function parseAs(buffer, docType) {
   const route = { transfer: "/slip", payslip: "/payslip", receipt: "/receipt" }[docType];

@@ -67,6 +67,20 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
 - **Log several entries in one message**: `กาแฟ 60, ข้าว 50` or one per line. Splitting
   only happens on an explicit separator, so `12,500` stays a single amount
 
+**File attachments (PDF · CSV · TXT)**
+- **PDF** — slips, receipts and statements downloaded from a banking app, read page by
+  page. The **text layer is tried first**, falling back to OCR only when a page has none:
+  exact figures instead of ~96% OCR accuracy, and under 0.1 s instead of ~8.5 s per page.
+  Pages that are not slips but do have text are then retried as a statement
+- **CSV/TSV** — bank statements, exports from other expense apps, and **this bot's own
+  CSV export** (so a ledger can be moved between instances or restored). Columns are
+  detected automatically, separate debit/credit columns are understood, **Thai Buddhist
+  years are converted**, and files saved by Thai Excel as windows-874 are decoded
+- **TXT** — one entry per line, parsed by the same rules as chat input
+- **Nothing is written until the user confirms** — a preview card shows totals, the date
+  range and sample rows first, because one file can hold hundreds of rows
+- Structurally broken rows are **skipped and reported**, never guessed at
+
 **Optional Google Sheets mirror**
 - Every transaction is copied to a spreadsheet the user owns — ready for charts and formulas
 - The user just shares their own sheet with the bot's service-account address; no Google
@@ -140,6 +154,7 @@ Thai keyword dictionary plus what the user has taught it, chat input is rule-bas
 | OCR engine | **`paddleocr` 3.7** + `paddlepaddle` 3.3 (**CPU only — no torch, no CUDA**) |
 | OCR HTTP server | **`http.server` from the standard library** — no FastAPI, no Flask |
 | Document parsers | **`re` · `json` · `difflib`** — standard library only |
+| PDF | **`poppler-utils`** (`pdftotext` / `pdftoppm`) — a ~15 MB system package, not a Python dep |
 | Images | Pillow |
 | Deploy | Docker Compose · `node:22-alpine` + `python:3.12-slim` |
 
@@ -161,7 +176,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 157 tests.
+(`ocr/`), covered by 173 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -177,6 +192,8 @@ GPU. The only neural network in the system is the 7.8 MB OCR recognition model.
 | Bank transfer slip | amount, currency, date, time, reference, from, to, bank |
 | Receipt / tax invoice | total, date, currency |
 | Payslip (ใบเงินเดือน) | net pay, gross, deductions, tax, social security, employee id, pay period |
+| PDF (any of the above) | per page — text layer first, OCR only when there is none |
+| CSV / TSV / TXT | date, amount, direction, description, category — confirm before import |
 
 Banks detected: **กสิกรไทย (K-Bank/K+)**, **ไทยพาณิชย์ (SCB)**, **กรุงเทพ (BBL)**,
 **กรุงไทย (KTB)**, **กรุงศรี (BAY)**, **ทีทีบี (ttb)**, **ออมสิน (GSB)**,
@@ -192,7 +209,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           157 tests, no network or GPU required — `npm test`
+test/           173 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
 assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
@@ -205,7 +222,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 157 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 173 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real
