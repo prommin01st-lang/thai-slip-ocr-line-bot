@@ -9,6 +9,18 @@ function required(name) {
   return v;
 }
 
+// --- Google Sheets (ไม่บังคับ) ---
+//
+// ใช้ Service Account: ผู้ใช้สร้างชีตของตัวเอง แชร์ให้อีเมลนี้เป็น "ผู้แก้ไข"
+// แล้วส่งลิงก์เข้าแชท — ไม่ต้องมี OAuth consent screen ไม่ต้องผ่าน Google verification
+// และไม่ต้องเก็บ refresh token รายคน (ซึ่งจะกลายเป็นความลับที่ต้องเข้ารหัสอีกกอง)
+//
+// 🔒 GOOGLE_SA_KEY คือ private key จริง — อยู่ใน .env เท่านั้น ห้าม commit
+//    ค่าที่ก๊อปจากไฟล์ JSON ของ Google มี `\n` เป็นตัวอักษรสองตัว ต้องแปลงกลับเป็น
+//    ขึ้นบรรทัดใหม่จริง ไม่งั้น crypto อ่าน PEM ไม่ออก (error กำกวมมาก: "DECODER routines")
+const saEmail = (process.env.GOOGLE_SA_EMAIL || "").trim();
+const saKey = (process.env.GOOGLE_SA_KEY || "").replace(/\\n/g, "\n").trim();
+
 export const config = {
   // จาก LINE Developers Console → ช่อง Messaging API
   channelSecret: required("LINE_CHANNEL_SECRET"),
@@ -55,6 +67,13 @@ export const config = {
 
   // LINE ส่งรูปได้สูงสุด 10MB อยู่แล้ว — กันไว้อีกชั้นกัน OOM ฝั่งเรา
   maxImageBytes: Number(process.env.MAX_IMAGE_BYTES || 10 * 1024 * 1024),
+
+  googleSaEmail: saEmail,
+  googleSaKey: saKey,
+  // ไม่ตั้งคีย์ = ปุ่ม/คำสั่งเชื่อมชีตไม่โผล่เลย (ดีกว่าโผล่แล้วกดไม่ได้)
+  sheetsEnabled: !!(saEmail && saKey),
+  // sync ทุกกี่มิลลิวินาที — ถี่กว่านี้ไม่มีประโยชน์ ผู้ใช้ไม่ได้จ้องชีตอยู่
+  sheetSyncMs: Number(process.env.SHEET_SYNC_MS || 20_000),
 };
 
 if (missing.length) {

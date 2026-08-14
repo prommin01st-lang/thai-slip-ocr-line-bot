@@ -156,6 +156,46 @@ const MIGRATIONS = [
   `
   ALTER TABLE access ADD COLUMN display_name TEXT;
   `,
+  // --- migration 7: กระจกสะท้อนลง Google Sheet ของผู้ใช้เอง ---
+  //
+  // **SQLite ยังเป็นแหล่งจริงเสมอ ชีตเป็นสำเนาทางเดียว** — ความถูกต้องของระบบนี้
+  // อยู่ใน constraint ของ DB (UNIQUE กันสลิปซ้ำ, CASCADE ตอนลบตาม PDPA, สตางค์เป็น
+  // จำนวนเต็ม) ซึ่ง Sheets ไม่มีสักอย่าง และผู้ใช้แก้เซลล์เองได้ตลอดเวลา
+  //
+  // **ทำไมต้องมี outbox ไม่เขียนตรง** — node:sqlite เป็น API แบบ synchronous ทั้งไฟล์
+  // ใส่ await ลงไปใน ledger.js ต้องแก้ signature ทุกฟังก์ชันแล้วเทสทั้งชุดพัง
+  // และ Sheets API ตอบ ~300-600 ms ซึ่งจะทำให้ webhook ที่ตอบใน 3 ms ช้าจน LINE retry
+  // จดใบสั่งงานลงตาราง (sync, เร็ว) แล้วให้ worker ตามไปทำ = ได้ retry กับการรวม
+  // เป็น batch มาฟรี และเน็ตล่มก็ไม่มีอะไรหาย
+  //
+  // ⚠️ `sheet_outbox` **ห้ามมี FK ไป users** — "ลบข้อมูลของฉัน" ลบแถวใน users
+  // ถ้าผูก FK ไว้ CASCADE จะลบใบสั่ง 'wipe' ทิ้งไปพร้อมกัน แล้วข้อมูลจะค้างอยู่บนชีต
+  // ตลอดไปทั้งที่ผู้ใช้สั่งลบแล้ว (ผิด PDPA ในแบบที่ไม่มีใครเห็น)
+  `
+  CREATE TABLE sheet_links (
+    line_user_id   TEXT PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+    spreadsheet_id TEXT NOT NULL,
+    tab            TEXT,                    -- NULL = ยังไม่รู้ชื่อแท็บ (เติมตอน sync ครั้งแรก)
+    linked_at      TEXT NOT NULL,
+    last_sync_at   TEXT,
+    last_error     TEXT
+  );
+
+  CREATE TABLE sheet_outbox (
+    id           INTEGER PRIMARY KEY,
+    line_user_id TEXT NOT NULL,
+    op           TEXT NOT NULL CHECK (op IN ('upsert','delete','wipe')),
+    txn_id       INTEGER,                   -- NULL สำหรับ wipe
+    -- ปกติไม่ต้องเก็บค่า (ตอน sync ค่อยอ่านค่าล่าสุดจาก txns เอา → แก้ 3 ครั้งติดกัน
+    -- ก็ยิงครั้งเดียวได้ค่าล่าสุด) **ยกเว้น wipe** ซึ่งเกิดตอนที่แถวใน sheet_links
+    -- เพิ่งถูก CASCADE ลบไปพร้อม users แล้ว — ต้องพก spreadsheet_id ติดใบสั่งมาเอง
+    payload      TEXT,
+    tries        INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX sheet_outbox_user ON sheet_outbox (line_user_id, id);
+  `,
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {

@@ -110,6 +110,22 @@ export function grantConsent(userId, displayName = null) {
 export function deleteAllData(userId) {
   const d = db();
   const before = countUserRows(userId);
+
+  // ⚠️ ข้อมูลที่ส่งออกไปอยู่บน Google Sheet ของผู้ใช้ต้องถูกล้างด้วย ไม่งั้น "ลบแล้ว"
+  //    เป็นความจริงแค่ครึ่งเดียว — และเป็นครึ่งที่มองไม่เห็นจากในแชท
+  //
+  //    ต้องอ่าน sheet_links **ก่อน** ลบ users (CASCADE จะพามันหายไปด้วย) และต้อง
+  //    จดใบสั่ง wipe **ก่อน** ลบเช่นกัน: ถ้า process ตายคาระหว่างนั้น สิ่งที่ยอมให้
+  //    เกิดได้คือ "ชีตถูกล้างแล้วแต่ DB ยังอยู่" (ผู้ใช้สั่งลบซ้ำได้) ไม่ใช่ทางกลับกัน
+  //    ซึ่งข้อมูลจะค้างบนชีตตลอดไปโดยไม่มีอะไรในระบบรู้ว่ามันยังอยู่
+  const link = sheetLink(userId);
+  d.prepare("DELETE FROM sheet_outbox WHERE line_user_id = ?").run(userId);   // ใบสั่งเก่าหมดความหมายแล้ว
+  if (link) {
+    d.prepare(`INSERT INTO sheet_outbox (line_user_id, op, txn_id, payload, created_at)
+               VALUES (?, 'wipe', NULL, ?, ?)`)
+      .run(userId, JSON.stringify({ spreadsheetId: link.spreadsheet_id, tab: link.tab }), nowIso());
+  }
+
   // ⚠️ ตารางที่ **ไม่มี FOREIGN KEY** ไปที่ users จะไม่ถูก CASCADE — ต้องลบเอง
   //    (`push_log`, `alert_log` ตั้งใจไม่ผูก FK เพราะเป็น log ที่ต้องเขียนได้เร็ว)
   //    ลืมตัวใดตัวหนึ่ง = "ลบข้อมูลของฉัน" ลบไม่หมดจริง ผิด PDPA
@@ -307,6 +323,7 @@ export function recordSlip(userId, parsed, { imageSha256 = null, direction = nul
     .run(txnId, userId, parsed.ref ?? null, (parsed.banks ?? [])[0] ?? null, imageSha256,
          JSON.stringify(parsed), JSON.stringify(parsed.warnings ?? []), nowIso());
 
+  queueSheet(userId, "upsert", Number(txnId));
   return { ok: true, txnId: Number(txnId), direction: dir, status, amountCents: cents };
 }
 
@@ -330,6 +347,7 @@ export function recordEntry(userId, entry, { occurredAt: at = null } = {}) {
          categoryFor(userId, entry.note), entry.note ?? null,
          entry.guessed ? "medium" : "high",
          entry.guessed ? "pending" : "confirmed", nowIso());
+  queueSheet(userId, "upsert", Number(info.lastInsertRowid));
   return {
     ok: true, txnId: Number(info.lastInsertRowid),
     direction: entry.direction, amountCents: entry.amountCents,
@@ -363,6 +381,7 @@ export function setCategory(userId, txnId, category) {
   db().prepare("UPDATE txns SET category = ? WHERE id = ? AND line_user_id = ?")
     .run(category, txnId, userId);
   learnCategory(userId, t.counterparty ?? t.note, category);
+  queueSheet(userId, "upsert", txnId);
   return true;
 }
 
@@ -374,9 +393,11 @@ export function setCategory(userId, txnId, category) {
  * โดยไม่มีทางปิด
  */
 export function confirmTxn(userId, txnId) {
-  return db().prepare(`
+  const changed = db().prepare(`
     UPDATE txns SET status = 'confirmed'
     WHERE id = ? AND line_user_id = ? AND status = 'pending'`).run(txnId, userId).changes > 0;
+  if (changed) queueSheet(userId, "upsert", txnId);
+  return changed;
 }
 
 export function learnCategory(userId, counterparty, category) {
@@ -539,6 +560,7 @@ export function deleteTxn(userId, txnId) {
     .run(txnId, userId);
   if (info.changes > 0) {
     d.prepare("DELETE FROM slips WHERE txn_id = ? AND line_user_id = ?").run(txnId, userId);
+    queueSheet(userId, "delete", txnId);
   }
   return info.changes > 0;
 }
@@ -554,8 +576,10 @@ export function updateTxn(userId, txnId, { amountCents, direction, category, not
   // แก้แล้วถือว่าผู้ใช้ยืนยันเอง → เลิกเป็น pending
   sets.push("status = CASE WHEN status='pending' THEN 'confirmed' ELSE status END");
   vals.push(txnId, userId);
-  return db().prepare(`UPDATE txns SET ${sets.join(", ")} WHERE id = ? AND line_user_id = ?`)
+  const changed = db().prepare(`UPDATE txns SET ${sets.join(", ")} WHERE id = ? AND line_user_id = ?`)
     .run(...vals).changes > 0;
+  if (changed) queueSheet(userId, "upsert", txnId);
+  return changed;
 }
 
 /**
@@ -563,8 +587,10 @@ export function updateTxn(userId, txnId, { amountCents, direction, category, not
  * `at` = 'YYYY-MM-DD HH:MM' หรือ null
  */
 export function setOccurredAt(userId, txnId, at) {
-  return db().prepare("UPDATE txns SET occurred_at = ? WHERE id = ? AND line_user_id = ?")
+  const changed = db().prepare("UPDATE txns SET occurred_at = ? WHERE id = ? AND line_user_id = ?")
     .run(at, txnId, userId).changes > 0;
+  if (changed) queueSheet(userId, "upsert", txnId);
+  return changed;
 }
 
 /** วันที่เดิมที่พิมพ์บนสลิป — เก็บไว้ใน fields_json ตอนบันทึก จึงย้อนกลับได้เสมอ */
@@ -745,7 +771,9 @@ const CSV_COLS = [
   ["คู่ค้า", (t) => t.counterparty ?? ""],
   ["รายละเอียด", (t) => t.note ?? ""],
   ["ที่มา", (t) => ({ slip: "สลิป", chat: "พิมพ์เอง", manual: "กรอกเอง" }[t.source] ?? t.source)],
-  ["สถานะ", (t) => ({ confirmed: "ยืนยันแล้ว", pending: "รอตรวจ" }[t.status] ?? t.status)],
+  // 'rejected' ไม่โผล่ใน CSV (กรองออกตั้งแต่ query) แต่ **โผล่ในชีต** เพราะที่นั่น
+  // ใช้ soft delete เหมือน DB — เขียนทับแถวเดิมว่า "ลบแล้ว" แทนการลบแถวทิ้ง
+  ["สถานะ", (t) => ({ confirmed: "ยืนยันแล้ว", pending: "รอตรวจ", rejected: "ลบแล้ว" }[t.status] ?? t.status)],
   ["เลขอ้างอิง", (t) => t.ref ?? ""],
   ["ธนาคาร", (t) => t.bank ?? ""],
 ];
@@ -771,6 +799,106 @@ export function exportCsv(userId) {
   const lines = [CSV_COLS.map(([h]) => csvCell(h)).join(",")];
   for (const t of rows) lines.push(CSV_COLS.map(([, f]) => csvCell(f(t))).join(","));
   return { csv: "﻿" + lines.join("\r\n") + "\r\n", count: rows.length };
+}
+
+// ---------- กระจกสะท้อนลง Google Sheet ของผู้ใช้ ----------
+//
+// ทุกฟังก์ชันในหมวดนี้เป็น sync ล้วนเหมือนที่เหลือทั้งไฟล์ — แค่ **จดใบสั่ง** ลงตาราง
+// การยิง HTTP จริงอยู่ใน sheetSync.js ซึ่งวิ่งเป็น worker แยก (ดูเหตุผลใน migration 7)
+
+/** หัวตารางของชีต = คอลัมน์ชุดเดียวกับ CSV เป๊ะ ๆ (นิยามที่เดียวจะได้ไม่หลุดจากกัน) */
+export const SHEET_HEADERS = CSV_COLS.map(([h]) => h);
+
+/** ธุรกรรมหนึ่งแถว → array ตามลำดับ SHEET_HEADERS */
+export const sheetValues = (t) => CSV_COLS.map(([, f]) => f(t));
+
+/** ธุรกรรม + ฟิลด์จากสลิป (ref/bank) — รวม rejected ด้วย เพราะชีตต้องรู้ว่าถูกลบ */
+export function txnForSheet(userId, txnId) {
+  return db().prepare(`
+    SELECT t.*, s.ref, s.bank FROM txns t LEFT JOIN slips s ON s.txn_id = t.id
+    WHERE t.id = ? AND t.line_user_id = ?`).get(txnId, userId) ?? null;
+}
+
+export function sheetLink(userId) {
+  return db().prepare("SELECT * FROM sheet_links WHERE line_user_id = ?").get(userId) ?? null;
+}
+
+/** เชื่อมชีต แล้ว **คิวทุกรายการที่มีอยู่** ไปเติมย้อนหลัง ไม่ใช่เริ่มนับจากศูนย์ */
+export function linkSheet(userId, spreadsheetId, tab = null) {
+  const d = db();
+  d.prepare(`INSERT INTO sheet_links (line_user_id, spreadsheet_id, tab, linked_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (line_user_id) DO UPDATE
+               SET spreadsheet_id = excluded.spreadsheet_id, tab = excluded.tab,
+                   linked_at = excluded.linked_at, last_error = NULL`)
+    .run(userId, spreadsheetId, tab, nowIso());
+
+  const rows = d.prepare("SELECT id FROM txns WHERE line_user_id = ? ORDER BY id").all(userId);
+  for (const r of rows) queueSheet(userId, "upsert", r.id);
+  return rows.length;
+}
+
+export function unlinkSheet(userId) {
+  const d = db();
+  // ใบสั่งที่ค้างต้องหายไปด้วย — ไม่งั้น worker จะยิงต่อไปยังชีตที่ผู้ใช้เพิ่งตัดขาด
+  d.prepare("DELETE FROM sheet_outbox WHERE line_user_id = ?").run(userId);
+  return d.prepare("DELETE FROM sheet_links WHERE line_user_id = ?").run(userId).changes > 0;
+}
+
+export function setSheetTab(userId, tab) {
+  db().prepare("UPDATE sheet_links SET tab = ? WHERE line_user_id = ?").run(tab, userId);
+}
+
+export function markSheetSync(userId, error = null) {
+  db().prepare("UPDATE sheet_links SET last_sync_at = ?, last_error = ? WHERE line_user_id = ?")
+    .run(nowIso(), error, userId);
+}
+
+/**
+ * จดใบสั่ง sync — เงียบสนิทถ้าผู้ใช้ยังไม่ได้เชื่อมชีต (กรณีส่วนใหญ่)
+ *
+ * ใบสั่งเก่าของ txn เดียวกันถูกลบทิ้งก่อนเสมอ = **ใบล่าสุดชนะ** แก้ยอด 3 ครั้งรัว ๆ
+ * เหลือใบสั่งเดียว และ "แก้แล้วลบ" จบที่ delete ไม่ใช่ upsert ที่ค้างมาก่อนหน้า
+ */
+export function queueSheet(userId, op, txnId = null, payload = null) {
+  const d = db();
+  if (!d.prepare("SELECT 1 FROM sheet_links WHERE line_user_id = ?").get(userId)) return false;
+  if (txnId != null) {
+    d.prepare("DELETE FROM sheet_outbox WHERE line_user_id = ? AND txn_id = ?").run(userId, txnId);
+  }
+  d.prepare(`INSERT INTO sheet_outbox (line_user_id, op, txn_id, payload, created_at)
+             VALUES (?, ?, ?, ?, ?)`)
+    .run(userId, op, txnId, payload ? JSON.stringify(payload) : null, nowIso());
+  return true;
+}
+
+/** ผู้ใช้ที่มีงานค้าง — worker วนตามนี้ ทีละคน */
+export function sheetPendingUsers(limit = 20) {
+  return db().prepare(`
+    SELECT line_user_id, COUNT(*) n, MIN(tries) tries FROM sheet_outbox
+    GROUP BY line_user_id ORDER BY MIN(id) LIMIT ?`).all(limit);
+}
+
+export function sheetJobs(userId, limit = 200) {
+  return db().prepare("SELECT * FROM sheet_outbox WHERE line_user_id = ? ORDER BY id LIMIT ?")
+    .all(userId, limit);
+}
+
+export function clearSheetJobs(ids) {
+  if (!ids.length) return 0;
+  return db().prepare(`DELETE FROM sheet_outbox WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .run(...ids).changes;
+}
+
+/** ยิงไม่สำเร็จ → นับครั้งไว้ ให้ worker ถอยห่างขึ้นเรื่อย ๆ แทนที่จะรัวไม่หยุด */
+export function failSheetJobs(ids, error) {
+  if (!ids.length) return;
+  db().prepare(`UPDATE sheet_outbox SET tries = tries + 1, last_error = ?
+                WHERE id IN (${ids.map(() => "?").join(",")})`).run(String(error).slice(0, 300), ...ids);
+}
+
+export function sheetQueueDepth(userId) {
+  return db().prepare("SELECT COUNT(*) n FROM sheet_outbox WHERE line_user_id = ?").get(userId).n;
 }
 
 // ---------- โควตา push (300/เดือน — ต้องนับเอง) ----------

@@ -11,6 +11,7 @@ import { handleEvent } from "./handlers.js";
 import * as L from "./ledger.js";
 import * as ocr from "./ocrClient.js";
 import { ahead } from "./queue.js";
+import * as sheetSync from "./sheetSync.js";
 
 const app = express();
 
@@ -101,6 +102,10 @@ app.use((err, _req, res, _next) => {
 
 app.listen(config.port, async () => {
   console.log(`>> SlipingMan พร้อม → http://localhost:${config.port}/webhook`);
+  // กระจก Google Sheet — ไม่ตั้งคีย์ service account ก็ไม่ต้องวิ่ง (คืน false)
+  console.log(sheetSync.start()
+    ? `>> sync Google Sheet ทุก ${Math.round(config.sheetSyncMs / 1000)} วิ (${config.googleSaEmail})`
+    : ">> ไม่ได้เปิด Google Sheet (ไม่ได้ตั้ง GOOGLE_SA_EMAIL / GOOGLE_SA_KEY)");
   const h = await ocr.health();
   console.log(
     h.ok

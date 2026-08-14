@@ -13,11 +13,14 @@ import * as ocr from "./ocrClient.js";
 import * as L from "./ledger.js";
 import { enqueue, ahead } from "./queue.js";
 import { take } from "./ratelimit.js";
+import { collect } from "./batch.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          summaryBubble, txnListBubble, categoryButtons, categoryPickerBubble,
          shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
-import { parseEntry } from "./nlu.js";
+import { parseSheetId } from "./sheets.js";
+import { syncUser } from "./sheetSync.js";
+import { parseEntries } from "./nlu.js";
 import { nowLocal } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
 
@@ -62,6 +65,51 @@ const notFoundCard = (id) => card({
   actions: [{ label: "🧾 ดูรายการ", text: "รายการ" }],
 });
 
+/** แถวรายการในการ์ดสรุปชุด — โชว์ได้ 6 แถว ที่เหลือสรุปเป็นบรรทัดเดียว */
+const BATCH_ROWS = 6;
+
+/**
+ * การ์ดสรุป "บันทึกหลายรายการทีเดียว"
+ *
+ * **ไม่ใส่ปุ่มจัดหมวดรายตัว** — 5 รายการ × 4 ปุ่ม = การ์ดยาวจนหาปุ่มจริงไม่เจอ
+ * ให้ไปจัดที่หน้า "รายการ" ซึ่งมีปุ่มครบและกรองเฉพาะที่ยังไม่จัดหมวดได้อยู่แล้ว
+ *
+ * `skipped` = ท่อนที่คั่นมาแล้วแต่ตีความไม่ได้ — **ต้องบอกเสมอ** ผู้ใช้พิมพ์มา 5
+ * แล้วบันทึกได้ 4 โดยไม่บอกว่าอันไหนหาย คือความผิดพลาดที่หาต้นเหตุไม่ได้เลย
+ */
+export function entriesCard(saved, skipped = []) {
+  const sum = (dir) => saved.filter((s) => s.direction === dir)
+    .reduce((a, s) => a + s.amountCents, 0);
+  const inC = sum("in"), outC = sum("out");
+  const shown = saved.slice(0, BATCH_ROWS);
+  const rest = saved.length - shown.length;
+  const uncategorised = saved.filter((s) => s.direction === "out").length > 0;
+
+  return card({
+    title: `บันทึก ${saved.length} รายการแล้ว`, emoji: "🧾", tone: "success",
+    rows: [
+      ...shown.map((s) => ({
+        label: s.note || DIR_LABEL[s.direction],
+        value: `${s.direction === "in" ? "+" : "−"}${L.fromCents(s.amountCents)}`,
+      })),
+      ...(rest > 0 ? [{ label: `และอีก ${rest} รายการ`, value: "" }] : []),
+      ...(outC ? [{ label: "รวมรายจ่าย", value: L.fromCents(outC), strong: true }] : []),
+      ...(inC ? [{ label: "รวมรายรับ", value: L.fromCents(inC), strong: true }] : []),
+    ],
+    notes: skipped.length
+      ? [`ตีความไม่ได้ ไม่ได้บันทึก: ${skipped.map((s) => `“${s}”`).join(" · ")}`]
+      : [],
+    text: "ยังไม่ได้จัดหมวด — กดดูรายการแล้วเลือกหมวดได้ทีละรายการ",
+    actions: [
+      ...(uncategorised
+        ? [{ label: "📂 จัดหมวดที่ค้าง", data: "act=list&c=-", primary: true }]
+        : [{ label: "🧾 ดูรายการ", data: "act=list", primary: true }]),
+      { label: "📊 ดูสรุป", data: "act=summary" },
+    ],
+    altText: `บันทึก ${saved.length} รายการ`,
+  });
+}
+
 /**
  * การ์ดส่งออก CSV — LINE ส่งไฟล์ไม่ได้ จึงต้องให้ลิงก์ที่บอทเสิร์ฟเอง
  * ต้องมี PUBLIC_URL ไม่งั้นลิงก์จะเป็น localhost ซึ่งมือถือเปิดไม่ได้
@@ -91,6 +139,58 @@ const exportCard = (userId) => {
   });
 };
 
+// ---------- Google Sheet ----------
+
+/**
+ * วิธีเชื่อมชีต — อีเมล service account ส่งเป็น**ข้อความธรรมดาใบแยก**เสมอ
+ *
+ * ตัวอักษรใน Flex คัดลอกไม่ได้ (ข้อจำกัดของ LINE) และอีเมลนี้ยาว 40+ ตัวอักษร
+ * แบบพิมพ์ตามมือไม่ไหว — เหมือนกรณี LINE user ID ที่เจอมาแล้ว
+ */
+const sheetHelpCards = () => [
+  card({
+    title: "เชื่อม Google Sheet ของคุณ", emoji: "📗", tone: "info",
+    text: "รายการทั้งหมดจะถูกคัดลอกขึ้นชีตของคุณเองอัตโนมัติ เอาไปทำกราฟหรือสูตรต่อได้ตามใจ",
+    rows: [
+      { label: "ขั้นที่ 1", value: "สร้าง Google Sheet เปล่าไว้ 1 ไฟล์" },
+      { label: "ขั้นที่ 2", value: "กด “แชร์” ใส่อีเมลข้างล่างนี้ เลือกสิทธิ์ “ผู้แก้ไข”" },
+      { label: "ขั้นที่ 3", value: "ส่งลิงก์ชีตเข้ามาในแชทนี้ได้เลย" },
+    ],
+    notes: [
+      "ชีตเป็นของคุณคนเดียว — ถอนสิทธิ์เมื่อไหร่ก็ได้จากในชีตเอง",
+      "ข้อมูลจะถูกส่งออกไปเก็บไว้ที่ Google ซึ่งอยู่นอกเครื่องของผู้ดูแลระบบ",
+      "ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับในรอบถัดไป",
+    ],
+    altText: "วิธีเชื่อม Google Sheet",
+  }),
+  { type: "text", text: config.googleSaEmail },
+];
+
+const sheetStatusCard = (userId) => {
+  const link = L.sheetLink(userId);
+  if (!link) return sheetHelpCards();
+  const waiting = L.sheetQueueDepth(userId);
+  return card({
+    title: link.last_error ? "ชีตเชื่อมอยู่ แต่ sync ไม่ผ่าน" : "เชื่อมชีตอยู่",
+    emoji: link.last_error ? "⚠️" : "📗",
+    tone: link.last_error ? "warn" : "success",
+    rows: [
+      { label: "แท็บที่เขียน", value: link.tab || "(ยังไม่ได้เขียนครั้งแรก)" },
+      { label: "sync ล่าสุด", value: link.last_sync_at ? link.last_sync_at.slice(0, 16).replace("T", " ") : "ยังไม่เคย" },
+      { label: "รอ sync", value: waiting ? `${waiting} รายการ` : "ไม่มี" },
+    ],
+    // ต้องโชว์สาเหตุดิบจาก Google — เกือบทุกครั้งคือ "ยังไม่ได้แชร์ชีตให้อีเมลนี้"
+    // ซึ่งผู้ใช้แก้เองได้ใน 10 วินาที ถ้ารู้ว่าต้องแก้อะไร
+    notes: link.last_error ? [link.last_error] : [],
+    actions: [
+      { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${link.spreadsheet_id}/edit`, primary: true },
+      { label: "🔄 sync เดี๋ยวนี้", data: "act=sheetsync" },
+      { label: "🔌 เลิกเชื่อมชีต", data: "act=sheetoff" },
+    ],
+    altText: "สถานะการเชื่อม Google Sheet",
+  });
+};
+
 const settingsCard = (userId) => {
   const weeklyOn = L.getPref(userId, "weekly") === "on";
   const bs = L.getBudgets(userId);
@@ -106,6 +206,9 @@ const settingsCard = (userId) => {
         value: accts.length
           ? accts.map((a) => a.name_hint || `••••${a.acct_tail}`).join(", ")
           : "ยังไม่ได้จำ (จะถามตอนส่งสลิปใบแรก)" },
+      ...(config.sheetsEnabled
+        ? [{ label: "Google Sheet", value: L.sheetLink(userId) ? "เชื่อมอยู่" : "ยังไม่ได้เชื่อม" }]
+        : []),
     ],
     actions: [
       { label: weeklyOn ? "🔕 ปิดสรุปรายสัปดาห์" : "🔔 เปิดสรุปรายสัปดาห์", data: "act=weekly" },
@@ -113,6 +216,11 @@ const settingsCard = (userId) => {
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       { label: "📌 ตั้งงบรวม", fill: "งบ ", data: "act=prompt&kind=budget" },
       { label: "📌 ตั้งงบรายหมวด", fill: "งบ อาหาร ", data: "act=prompt&kind=budget" },
+      // ไม่ตั้งคีย์ service account = ไม่โผล่เลย ดีกว่าโผล่แล้วกดไปเจอทางตัน
+      ...(config.sheetsEnabled
+        ? [{ label: L.sheetLink(userId) ? "📗 ชีตที่เชื่อมไว้" : "📗 เชื่อม Google Sheet",
+             data: "act=sheet" }]
+        : []),
       // ต้องเปิด EXPORT_CSV *และ* มี PUBLIC_URL ถึงจะโผล่
       // (ไม่มีโดเมนสาธารณะ ลิงก์ดาวน์โหลดก็เปิดไม่ได้อยู่ดี)
       ...(config.exportEnabled && config.publicUrl ? [{ label: "📤 ส่งออก CSV", data: "act=export" }] : []),
@@ -365,7 +473,7 @@ function savedCard(rec, amount, occurredAt, category = null) {
   return card({ title: M[0], emoji: "ℹ️", tone: M[1], text: M[2] });
 }
 
-async function handleImage(event) {
+async function handleSingleImage(event) {
   const userId = event.source?.userId;
   const consented = userId ? L.hasConsent(userId) : false;
 
@@ -448,6 +556,140 @@ async function handleImage(event) {
   }
 }
 
+// ---------- รูปสลิปหลายใบในชุดเดียว ----------
+
+/**
+ * ทุกรูปเข้าที่นี่ก่อน — เก็บเข้าชุดแล้วรอ ~1.5 วิว่ามีใบตามมาอีกไหม (ดู batch.js)
+ *
+ * ใบเดียวก็ยังไปทางเดิมทุกอย่าง ไม่มีอะไรเปลี่ยน — ต้นทุนคือหน่วงเพิ่ม 1.5 วิ
+ * ซึ่งเทียบกับ OCR ~8.5 วิแล้วแทบไม่รู้สึก และแลกมากับการไม่เผาโควตา push
+ */
+function handleImage(event) {
+  const userId = event.source?.userId;
+  return collect(userId, event, (events) => runImageBatch(userId, events));
+}
+
+/** ชุดถูกยิงจาก timer → ไม่มีใครรับ error ต่อ ต้องจับเองให้หมดที่นี่ */
+async function runImageBatch(userId, events) {
+  try {
+    if (events.length === 1) return await handleSingleImage(events[0]);
+    return await handleImageBatch(userId, events);
+  } catch (err) {
+    console.error(`[ชุดสลิปล้มเหลว] ${err.stack || err.message}`);
+  }
+}
+
+/** อ่านและบันทึกสลิปหนึ่งใบ → คืนผลให้ตัวเรียกไปสรุป (ไม่ตอบผู้ใช้เอง) */
+async function processSlip(userId, event) {
+  const buffer = await downloadImage(event.message);
+  const hash = L.sha256(buffer);
+
+  // เช็คซ้ำก่อน OCR — ประหยัดไปทั้งรอบเหมือนทางใบเดียว
+  const dup = L.findDuplicate(userId, { imageSha256: hash });
+  if (dup) return { kind: "dup" };
+
+  const parsed = await enqueue(() => ocr.parseImage(buffer));
+  const rec = L.recordSlip(userId, parsed, { imageSha256: hash });
+  if (!rec.ok) return { kind: "skip", reason: rec.reason };
+  return { kind: "saved", rec, parsed };
+}
+
+const SLIP_SKIP = {
+  low_confidence: "อ่านยอดไม่ชัดพอ",
+  no_amount: "หายอดเงินไม่เจอ",
+  duplicate: "ซ้ำกับที่มีอยู่",
+  no_consent: "ยังไม่ได้ให้ความยินยอม",
+};
+
+/**
+ * หลายใบ → อ่านทีละใบ แล้วตอบ **การ์ดสรุปใบเดียว**
+ *
+ * ใช้ `respond()` กับ event ใบสุดท้าย: มันจะลอง reply (ฟรี) ก่อนเสมอ ถ้าอ่านนานเกิน
+ * จน token ตายค่อยตกไป push — 5 ใบ ≈ 42 วิ ยังทันโควตา reply สบาย ๆ
+ * เทียบกับเดิมที่ตอบทีละใบแล้วกิน push 4-5 ครั้งจาก 300 ครั้ง/เดือน
+ *
+ * ไม่ส่งการ์ด "รับแล้วกำลังอ่าน" นำหน้า เพราะจะเปลือง reply token ทิ้งไปเปล่า ๆ
+ * ใช้ loading animation แทน (ฟรี ไม่นับโควตา) และต่ออายุทุกใบ
+ */
+async function handleImageBatch(userId, events) {
+  const last = events[events.length - 1];
+
+  if (!L.hasConsent(userId)) {
+    return respond(last, consentCard(`ได้รับรูป ${events.length} ใบแล้ว แต่ยังบันทึกให้ไม่ได้`));
+  }
+
+  const saved = [], skipped = [];
+  let dup = 0;
+
+  for (const ev of events) {
+    // ต่ออายุทุกใบ — LINE ตั้งได้ครั้งละไม่เกิน 60 วิ ชุดใหญ่จึงต้องต่อระหว่างทาง
+    await showLoading(userId, 40);
+    try {
+      const r = await processSlip(userId, ev);
+      if (r.kind === "dup") dup++;
+      else if (r.kind === "skip") skipped.push(SLIP_SKIP[r.reason] ?? r.reason);
+      else saved.push(r.rec);
+    } catch (err) {
+      console.error(`[สลิปในชุดล้มเหลว] ${err.stack || err.message}`);
+      skipped.push(err instanceof ocr.OcrTimeoutError ? "ใช้เวลานานเกินไป" : "อ่านไม่สำเร็จ");
+    }
+  }
+
+  try {
+    await respond(last, batchSlipCard(userId, events.length, saved, skipped, dup));
+  } finally {
+    await notifyAfter(userId);
+  }
+}
+
+/** นับซ้ำ ๆ ให้เป็น "เหตุผล ×N" — 5 ใบพังด้วยเหตุเดียวกันไม่ควรกิน 5 บรรทัด */
+const tally = (list) => {
+  const m = new Map();
+  for (const s of list) m.set(s, (m.get(s) ?? 0) + 1);
+  return [...m].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k));
+};
+
+export function batchSlipCard(userId, total, saved, skipped, dup) {
+  const sum = (dir) => saved.filter((s) => s.direction === dir)
+    .reduce((a, s) => a + s.amountCents, 0);
+  const inC = sum("in"), outC = sum("out");
+  const unknown = saved.filter((s) => s.direction === "unknown");
+  const pending = saved.filter((s) => s.status === "pending");
+  const ok = saved.length > 0;
+
+  return card({
+    title: ok ? `บันทึก ${saved.length} จาก ${total} ใบ` : `ไม่ได้บันทึกสักใบจาก ${total} ใบ`,
+    emoji: ok ? "🧾" : "⚠️",
+    tone: !ok ? "warn" : skipped.length || dup ? "info" : "success",
+    rows: [
+      ...(outC ? [{ label: "รวมรายจ่าย", value: L.fromCents(outC), strong: true }] : []),
+      ...(inC ? [{ label: "รวมรายรับ", value: L.fromCents(inC), strong: true }] : []),
+      ...(dup ? [{ label: "ซ้ำ ไม่นับให้", value: `${dup} ใบ` }] : []),
+      ...(skipped.length ? [{ label: "อ่านไม่ผ่าน", value: `${skipped.length} ใบ` }] : []),
+    ],
+    // ต้องบอกเหตุผลรายใบเสมอ — "บันทึก 3 จาก 5" โดยไม่บอกว่าอีก 2 ใบเป็นอะไร
+    // แปลว่าผู้ใช้ต้องไล่เทียบเองว่าใบไหนหาย ซึ่งทำไม่ได้จริงเมื่อส่งทีละหลายใบ
+    notes: [
+      ...tally(skipped),
+      ...(unknown.length ? [`ยังไม่รู้ว่ารับหรือจ่าย ${unknown.length} ใบ`] : []),
+      ...(pending.length ? [`ควรตรวจยอด ${pending.length} ใบ`] : []),
+    ],
+    actions: [
+      ...(unknown.length
+        ? [{ label: `💬 ระบุรับ/จ่าย (${unknown.length} ใบ)`,
+             data: `act=askdir&id=${unknown[0].txnId}`, primary: true }]
+        : []),
+      ...(pending.length
+        ? [{ label: `📝 ตรวจยอด ${pending.length} ใบ`, data: "act=list&s=pending",
+             primary: !unknown.length }]
+        : []),
+      { label: "🧾 ดูรายการ", data: "act=list", primary: !unknown.length && !pending.length },
+      { label: "📊 ดูสรุป", data: "act=summary" },
+    ],
+    altText: ok ? `บันทึกสลิป ${saved.length}/${total} ใบ` : `ไม่ได้บันทึกสลิป ${total} ใบ`,
+  });
+}
+
 // ---------- รายการ ----------
 
 const LIST_LIMIT = 8;
@@ -460,7 +702,9 @@ const LIST_LIMIT = 8;
 export function listMessage(userId, { d, c, s } = {}) {
   // ค่าจาก postback ผู้ใช้ปลอมได้ — รับเฉพาะที่รู้จัก ไม่งั้นตัวกรองที่ไม่มีจริง
   // จะให้ผลลัพธ์ว่างเปล่าแล้วดูเหมือนข้อมูลหาย
-  const dir = d === "in" || d === "out" ? d : null;
+  // "unknown" ต้องกรองได้ด้วย — ส่งสลิปทีละหลายใบแล้วมีหลายใบที่ระบบเดาทิศทางไม่ออก
+  // ถ้าหาไม่เจอเป็นกลุ่ม ผู้ใช้ต้องไล่กดทีละใบจากการ์ดเก่าที่เลื่อนหายไปแล้ว
+  const dir = d === "in" || d === "out" || d === "unknown" ? d : null;
   const cat = c === "-" || isCategory(c) ? c : null;
   const pending = s === "pending";
   const f = { direction: dir, category: cat, status: pending ? "pending" : null };
@@ -586,6 +830,36 @@ async function handlePostback(event) {
     return respond(event, exportCard(userId));
   }
   if (act === "settings") return respond(event, settingsCard(userId));
+
+  // --- Google Sheet ---
+  if (act === "sheet" || act === "sheetsync" || act === "sheetoff") {
+    if (!config.sheetsEnabled) return;      // ปิดอยู่ = ทำเหมือนไม่มีปุ่มนี้ (ปุ่มเก่าในแชทยังกดได้)
+    if (act === "sheetoff") {
+      const had = L.unlinkSheet(userId);
+      return respond(event, card({
+        title: had ? "เลิกเชื่อมชีตแล้ว" : "ยังไม่ได้เชื่อมชีตอยู่แล้ว",
+        emoji: "🔌", tone: "neutral",
+        // ต้องบอกให้ชัดว่าเราไม่ได้ลบอะไรบนชีตให้ — ผู้ใช้อาจเข้าใจว่า "เลิกเชื่อม"
+        // แปลว่าข้อมูลบนนั้นหายไปด้วย แล้วปล่อยข้อมูลการเงินค้างอยู่โดยไม่รู้ตัว
+        text: had ? "หยุดส่งข้อมูลขึ้นชีตแล้ว\nข้อมูลที่ขึ้นไปก่อนหน้ายังอยู่บนชีตของคุณ ลบเองได้เลย" : "",
+        actions: [{ label: "⚙️ กลับไปตั้งค่า", data: "act=settings", primary: true }],
+      }));
+    }
+    if (act === "sheetsync") {
+      if (!L.sheetLink(userId)) return respond(event, sheetHelpCards());
+      const r = await syncUser(userId);
+      return respond(event, r.error
+        ? card({ title: "sync ไม่ผ่าน", emoji: "⚠️", tone: "warn",
+                 text: "ส่วนใหญ่เกิดจากยังไม่ได้แชร์ชีตให้อีเมลของระบบ (สิทธิ์ “ผู้แก้ไข”)",
+                 notes: [r.error],
+                 actions: [{ label: "🔄 ลองใหม่", data: "act=sheetsync", primary: true }] })
+        : card({ title: "sync เรียบร้อย", emoji: "✅", tone: "success",
+                 rows: [{ label: "เขียนทับ", value: `${r.updated ?? 0} แถว` },
+                        { label: "เพิ่มใหม่", value: `${r.added ?? 0} แถว` }],
+                 actions: [{ label: "📗 ดูสถานะชีต", data: "act=sheet", primary: true }] }));
+    }
+    return respond(event, sheetStatusCard(userId));
+  }
   if (act === "forgetacct") {
     const n = L.forgetAccounts(userId);
     return respond(event, card({
@@ -744,7 +1018,13 @@ async function handlePostback(event) {
       ],
     });
     const ask = periodAskIfNeeded(userId, id);
-    return respond(event, ask ? [confirm, ask] : confirm);
+    if (ask) return respond(event, [confirm, ask]);
+
+    // ส่งมาหลายใบแล้วเดาทิศทางไม่ออกหลายใบ → ถามใบถัดไปต่อเลย
+    // ไม่งั้นผู้ใช้ต้องกลับไปหาการ์ดสรุปที่เลื่อนขึ้นไปแล้วกดใหม่ทุกใบ
+    const next = L.recentTxns(userId, 1, { direction: "unknown" })[0];
+    if (next) return respond(event, [confirm, askDirection(next.id, L.fromCents(next.amount_cents))]);
+    return respond(event, confirm);
   }
 
   if (act === "del") {
@@ -1059,13 +1339,84 @@ async function handleText(event) {
     }));
   }
 
+  // --- Google Sheet ---
+  //
+  // ⚠️ ต้องดัก **ก่อน** NLU เสมอ — ลิงก์ชีตมีตัวเลขปนอยู่เต็มไปหมด
+  // ("…/d/1AbC2…/edit#gid=0") ถ้าปล่อยตกไปถึง parseEntries จะกลายเป็น
+  // "บันทึกรายจ่าย 1 บาท" ทันที ซึ่งเป็นบั๊กที่ผู้ใช้หาสาเหตุเองไม่ได้เลย
+  if (config.sheetsEnabled) {
+    if (/^(เลิกเชื่อมชีต|ยกเลิกชีต|unlink)$/i.test(text)) {
+      const had = L.unlinkSheet(userId);
+      return respond(event, card({
+        title: had ? "เลิกเชื่อมชีตแล้ว" : "ยังไม่ได้เชื่อมชีตอยู่แล้ว", emoji: "🔌", tone: "neutral",
+        text: had ? "ข้อมูลที่ขึ้นไปก่อนหน้ายังอยู่บนชีตของคุณ ลบเองได้เลย" : "",
+      }));
+    }
+    if (/^(ชีต|เชื่อมชีต|sheets?|google ?sheets?)$/i.test(text)) {
+      if (!L.hasConsent(userId)) return respond(event, consentCard());
+      return respond(event, L.sheetLink(userId) ? sheetStatusCard(userId) : sheetHelpCards());
+    }
+    // รับทั้ง "เชื่อมชีต <ลิงก์>" และการวางลิงก์มาเฉย ๆ (คนส่วนใหญ่ทำอย่างหลัง)
+    const asked = /^เชื่อมชีต\s+/i.test(text);
+    const sid = (asked || /docs\.google\.com\/spreadsheets/.test(text))
+      ? parseSheetId(text.replace(/^เชื่อมชีต\s+/i, ""))
+      : null;
+    if (sid) {
+      if (!L.hasConsent(userId)) return respond(event, consentCard());
+      const queued = L.linkSheet(userId, sid);
+      const r = await syncUser(userId);      // ยิงทันที ผู้ใช้จะได้รู้ผลเดี๋ยวนี้ ไม่ต้องเดา
+      if (r.error) {
+        return respond(event, [card({
+          title: "เชื่อมแล้ว แต่เขียนลงชีตไม่ได้", emoji: "⚠️", tone: "warn",
+          text: "เกือบทุกครั้งเป็นเพราะยังไม่ได้แชร์ชีตให้อีเมลของระบบ\n"
+              + "เปิดชีต → กด “แชร์” → วางอีเมลข้างล่าง → เลือก “ผู้แก้ไข”",
+          notes: [r.error],
+          actions: [{ label: "🔄 แชร์แล้ว ลองใหม่", data: "act=sheetsync", primary: true },
+                    { label: "🔌 เลิกเชื่อม", data: "act=sheetoff" }],
+        }), { type: "text", text: config.googleSaEmail }]);
+      }
+      return respond(event, card({
+        title: "เชื่อมชีตเรียบร้อย", emoji: "📗", tone: "success",
+        rows: [
+          { label: "คัดลอกขึ้นชีต", value: `${queued} รายการ` },
+          { label: "แท็บ", value: L.sheetLink(userId)?.tab ?? "-" },
+        ],
+        text: "ต่อจากนี้ทุกรายการใหม่จะขึ้นชีตให้เองภายในไม่กี่วินาที",
+        notes: ["ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ",
+                "ลบข้อมูลของฉัน = ล้างข้อมูลบนชีตให้ด้วย"],
+        actions: [
+          { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${sid}/edit`, primary: true },
+          { label: "⚙️ ตั้งค่า", data: "act=settings" },
+        ],
+        altText: `เชื่อม Google Sheet แล้ว — คัดลอก ${queued} รายการ`,
+      }));
+    }
+  }
+
   if (userId && !L.hasConsent(userId)) {
     L.ensureUser(userId);
     return respond(event, consentCard());
   }
 
   // --- บันทึกจากข้อความ: "กาแฟ 60" / "จ่ายค่าไฟ 850" / "ได้เงินเดือน 30000" ---
-  const entry = parseEntry(text);
+  //
+  // หลายรายการในข้อความเดียวได้ ถ้ามีตัวคั่นชัดเจน (ขึ้นบรรทัดใหม่ / จุลภาค / +)
+  // ดูเหตุผลที่ไม่แยกจากช่องว่างเปล่า ๆ ที่ SPLIT ใน nlu.js
+  const { entries, skipped, ambiguous } = parseEntries(text);
+
+  if (entries.length > 1) {
+    const saved = [];
+    for (const e of entries) {
+      const rec = L.recordEntry(userId, e);
+      if (rec.ok) saved.push({ ...rec, note: e.note });
+    }
+    if (saved.length) {
+      await respond(event, entriesCard(saved, skipped));
+      return;
+    }
+  }
+
+  const entry = entries[0] ?? null;
   if (entry) {
     const rec = L.recordEntry(userId, entry);
     if (rec.ok) {
@@ -1079,7 +1430,12 @@ async function handleText(event) {
             entry.note ? { label: "รายการ", value: entry.note } : null,
             cat ? { label: "หมวด", value: labelOf(cat) } : null,
           ],
-          notes: entry.guessed ? ["ไม่มีคำว่า “จ่าย/ได้” ในข้อความ — ผมเดาให้เป็นรายจ่าย"] : [],
+          notes: [
+            entry.guessed ? "ไม่มีคำว่า “จ่าย/ได้” ในข้อความ — ผมเดาให้เป็นรายจ่าย" : null,
+            // มีตัวเลขหลายตัวแต่ไม่มีตัวคั่น → บันทึกรายการเดียวตามเดิม (เดาแยกเองอันตราย)
+            // แต่ต้องบอกวิธี ไม่งั้นผู้ใช้ที่ตั้งใจพิมพ์หลายรายการจะไม่มีวันรู้ว่าทำได้
+            ambiguous ? "ถ้าตั้งใจบันทึกหลายรายการ คั่นด้วยจุลภาค เช่น “กาแฟ 60, ข้าว 50”" : null,
+          ].filter(Boolean),
           // เดาเอง → ให้ปุ่มแก้ทันที ดีกว่าบอกให้พิมพ์ใหม่
           actions: [
             ...(entry.guessed
@@ -1159,6 +1515,9 @@ export async function handleEvent(event) {
   const kind = event.type === "message" && event.message?.type === "image" ? "image" : "msg";
   const rl = take(userId, kind);
   if (!rl.ok) {
+    // เพิ่งเตือนไปเมื่อกี้ → เงียบ (ดู `quiet` ใน ratelimit.js)
+    // ส่งรูปเกินโควตาทีเดียวหลายใบไม่ควรได้การ์ดเตือนใบต่อใบ
+    if (rl.quiet) return;
     // ตอบด้วย reply (ฟรี) ไม่ใช่ push — คนที่ยิงรัวไม่ควรกินโควตา 300/เดือนของทุกคน
     return respond(event, card({
       title: "ขอพักแป๊บนึงครับ", emoji: "🐢", tone: "warn",

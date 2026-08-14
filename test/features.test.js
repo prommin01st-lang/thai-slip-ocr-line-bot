@@ -7,6 +7,7 @@ import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thai
          categoryPickerBubble,
          categoryButtons } from "../src/flex.js";
 import { summaryMessage } from "../src/handlers.js";
+import * as H from "../src/handlers.js";
 import { guessCategory, isCategory, labelOf } from "../src/categories.js";
 import * as RL from "../src/ratelimit.js";
 
@@ -506,15 +507,25 @@ const R = "Urate000000000000000000000000001";
 RL._reset();
 const T0 = 1_000_000;                      // ฉีดเวลาเอง ไม่ต้องรอจริง
 
-// รูป: รัวได้ 3 ใบ ใบที่ 4 ต้องโดนกั้น
-for (let i = 1; i <= 3; i++) {
+// รูป: รัวได้ 10 ใบ (= MAX_ITEMS ของ batch.js) ใบที่ 11 ต้องโดนกั้น
+//
+// เพดานต้องเท่ากับขนาดชุดสูงสุด — ผู้ใช้เลือกรูปทีเดียวหลายใบจากแกลเลอรีเป็นเรื่องปกติ
+// ตัดที่ 3 ใบทำให้ใบที่ 4 ขึ้นไปถูกปฏิเสธทั้งที่ในสายตาผู้ใช้คือการส่งครั้งเดียว
+for (let i = 1; i <= 10; i++) {
   assert.equal(RL.take(R, "image", T0).ok, true, `ใบที่ ${i} ต้องผ่าน`);
 }
 const blocked = RL.take(R, "image", T0);
-assert.equal(blocked.ok, false, "ใบที่ 4 ต้องโดนกั้น");
+assert.equal(blocked.ok, false, "ใบที่ 11 ต้องโดนกั้น");
 assert.ok(blocked.retryInSec > 0 && blocked.retryInSec <= 20,
   `ต้องบอกด้วยว่ารออีกกี่วินาที (ได้ ${blocked.retryInSec})`);
-ok(`ยิงรูปรัว → ผ่าน 3 ใบ ใบที่ 4 ถูกกั้น (ลองใหม่ใน ${blocked.retryInSec} วิ)`);
+ok(`ยิงรูปรัว → ผ่าน 10 ใบ ใบที่ 11 ถูกกั้น (ลองใหม่ใน ${blocked.retryInSec} วิ)`);
+
+// ใบที่เกินโควตาพร้อมกันหลายใบ ต้องเตือน **ครั้งเดียว** ที่เหลือเงียบ
+// (ไม่งั้นส่ง 15 ใบ = การ์ด "ขอพักแป๊บนึง" 5 ใบรัว ๆ ซึ่งกวนกว่าตัวปัญหา)
+assert.equal(blocked.quiet, false, "ใบแรกที่เกินต้องเตือน");
+assert.equal(RL.take(R, "image", T0).quiet, true, "ใบถัด ๆ ไปต้องเงียบ");
+assert.equal(RL.take(R, "image", T0 + 16_000).quiet, false, "ผ่านไป 16 วิ เตือนได้อีกครั้ง");
+ok("เกินโควตาพร้อมกันหลายใบ → เตือนครั้งเดียว ที่เหลือเงียบ");
 
 // รอครบเวลาแล้วต้องได้คืนทีละใบ ไม่ใช่คืนเต็มถังทันที
 assert.equal(RL.take(R, "image", T0 + 20_000).ok, true, "ผ่านไป 20 วิ ต้องได้คืน 1 ใบ");
@@ -523,7 +534,7 @@ ok("สิทธิ์คืนทีละใบตามเวลา ไม่
 
 // ข้อความถูกจำกัดคนละถังกับรูป — ส่งรูปเยอะไม่ควรทำให้พิมพ์ “สรุป” ไม่ได้
 RL._reset();
-for (let i = 0; i < 3; i++) RL.take(R, "image", T0);
+for (let i = 0; i < 10; i++) RL.take(R, "image", T0);
 assert.equal(RL.take(R, "image", T0).ok, false, "รูปเต็มโควตาแล้ว");
 assert.equal(RL.take(R, "msg", T0).ok, true, "แต่ข้อความต้องยังส่งได้");
 ok("รูปกับข้อความแยกถังกัน — ส่งรูปเยอะแล้วยังพิมพ์คำสั่งได้");
@@ -727,5 +738,63 @@ const empty = JSON.stringify(categoryPickerBubble(L.categoryTotals(CE), fromCent
 assert.ok(empty.includes("ยังไม่มีรายจ่าย"), "ต้องบอกว่าทำไมถึงว่าง");
 assert.ok(empty.includes('"act=list"'), "ต้องมีทางถอยกลับ");
 ok("ไม่มีรายจ่าย → การ์ดอธิบายเหตุผล ไม่ใช่หน้าว่าง");
+
+// --- การ์ดสรุปแบบชุด (หลายรายการ / หลายสลิป) ---
+//
+// การ์ดพวกนี้ประกอบขึ้นจากข้อมูลที่ยาวไม่แน่นอน (ชื่อรายการ เหตุผลที่อ่านไม่ผ่าน)
+// ซึ่งเป็นจุดที่ Flex พังง่ายที่สุด: text ว่าง หรือ null โผล่ใน contents แล้ว LINE ตอบ 400
+// โดยผู้ใช้เห็นแค่ "บอทเงียบ" — ต้องเดินทั้ง tree ตรวจเหมือนที่ flex.test ทำ
+function validFlex(node, path = "$") {
+  assert.ok(node !== null && node !== undefined, `${path}: มี null/undefined ใน Flex tree`);
+  assert.equal(typeof node.type, "string", `${path}: ไม่มี type`);
+  if (node.type === "text") {
+    assert.equal(typeof node.text, "string", `${path}.text ต้องเป็นสตริง`);
+    assert.ok(node.text.length > 0, `${path}.text ห้ามว่าง (LINE ตอบ 400)`);
+  }
+  for (const k of ["contents", "header", "body", "footer", "hero"]) {
+    const c = node[k];
+    if (!c) continue;
+    if (Array.isArray(c)) c.forEach((x, i) => validFlex(x, `${path}.${k}[${i}]`));
+    else validFlex(c, `${path}.${k}`);
+  }
+}
+
+const entries = H.entriesCard(
+  [{ txnId: 1, direction: "out", amountCents: 6000, note: "กาแฟ" },
+   { txnId: 2, direction: "out", amountCents: 5000, note: "ข้าว" },
+   { txnId: 3, direction: "in", amountCents: 100000, note: null }],   // ไม่มี note ต้องไม่พัง
+  ["อร่อยมาก"]);
+validFlex(entries.contents, "entriesCard");
+const entriesJson = JSON.stringify(entries);
+assert.ok(entriesJson.includes("บันทึก 3 รายการแล้ว"), "ต้องบอกจำนวนที่บันทึกจริง");
+assert.ok(entriesJson.includes("110.00"), "ต้องมียอดรวมรายจ่าย");
+assert.ok(entriesJson.includes("อร่อยมาก"), "ท่อนที่ตีความไม่ได้ต้องถูกรายงานบนการ์ด ไม่หายเงียบ");
+ok("การ์ดหลายรายการ: ยอดรวมแยกรับ/จ่าย + บอกท่อนที่ตีความไม่ได้");
+
+// เกิน 6 แถวต้องยุบ ไม่ใช่ปล่อยให้การ์ดยาวไม่จบ
+const many = H.entriesCard(
+  Array.from({ length: 9 }, (_, i) => ({ txnId: i, direction: "out", amountCents: 100, note: `ของ ${i}` })), []);
+validFlex(many.contents, "entriesCard-9");
+assert.ok(JSON.stringify(many).includes("และอีก 3 รายการ"), "ส่วนที่เกินต้องถูกสรุปเป็นบรรทัดเดียว");
+ok("รายการเยอะ → ยุบส่วนเกินเป็นบรรทัดเดียว การ์ดไม่ยาวเกิน");
+
+// การ์ดสรุปสลิปหลายใบ — เคสที่ปนกันครบทุกแบบ
+const slipBatch = H.batchSlipCard(U, 5,
+  [{ txnId: 11, direction: "out", amountCents: 20000, status: "confirmed" },
+   { txnId: 12, direction: "unknown", amountCents: 30000, status: "pending" }],
+  ["อ่านยอดไม่ชัดพอ", "อ่านยอดไม่ชัดพอ"], 1);
+validFlex(slipBatch.contents, "batchSlipCard");
+const slipBatchJson = JSON.stringify(slipBatch);
+assert.ok(slipBatchJson.includes("บันทึก 2 จาก 5 ใบ"), "ต้องบอกทั้งที่สำเร็จและทั้งหมด");
+assert.ok(slipBatchJson.includes("อ่านยอดไม่ชัดพอ ×2"), "เหตุผลซ้ำต้องถูกยุบเป็น ×N");
+assert.ok(slipBatchJson.includes("act=askdir&id=12"), "ใบที่ยังไม่รู้ทิศทางต้องมีปุ่มพาไปตอบ");
+assert.ok(slipBatchJson.includes("ซ้ำ ไม่นับให้"), "ต้องบอกจำนวนใบที่ซ้ำ");
+ok("การ์ดสลิปหลายใบ: บอกครบทั้งบันทึก/ซ้ำ/อ่านไม่ผ่าน + ปุ่มตอบทิศทาง");
+
+// ไม่สำเร็จสักใบ ต้องยังเป็นการ์ดที่ถูกกติกา (body ว่างคือจุดที่ LINE ตอบ 400)
+const none = H.batchSlipCard(U, 3, [], [], 3);
+validFlex(none.contents, "batchSlipCard-empty");
+assert.ok(JSON.stringify(none).includes("ไม่ได้บันทึกสักใบ"), "ต้องพูดตรง ๆ ว่าไม่ได้บันทึกอะไรเลย");
+ok("สลิปซ้ำทั้งชุด → การ์ดยังถูกกติกา ไม่ใช่กล่องเปล่า");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

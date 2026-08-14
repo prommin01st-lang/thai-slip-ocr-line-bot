@@ -17,9 +17,15 @@
  * ส่วนข้อความเป็น rule ล้วน ~3 ms จึงปล่อยได้เยอะกว่ามาก
  */
 const LIMITS = {
-  image: { capacity: 3, refillMs: 20_000 },   // รัวได้ 3 ใบ แล้วได้คืนใบละ 20 วิ
+  // capacity ต้องเท่ากับ MAX_ITEMS ของ batch.js — ผู้ใช้เลือกรูปทีเดียวหลายใบจาก
+  // แกลเลอรีเป็นเรื่องปกติ ตัดที่ 3 ใบทำให้ใบที่ 4 ขึ้นไปถูกปฏิเสธทั้งที่เป็นการส่ง
+  // ครั้งเดียวในสายตาผู้ใช้ (เจอจริง) — อัตราระยะยาวยังคุมไว้ที่ 1 ใบ/20 วิเท่าเดิม
+  image: { capacity: 10, refillMs: 20_000 },
   msg: { capacity: 20, refillMs: 3_000 },     // ข้อความ/ปุ่ม — เผื่อกดเร็ว ๆ ได้สบาย
 };
+
+/** เตือน "ส่งถี่เกิน" ซ้ำได้เร็วสุดทุกกี่มิลลิวินาที (ดู `quiet` ใน take) */
+const WARN_EVERY_MS = 15_000;
 
 const buckets = new Map();          // `${userId}:${kind}` → { tokens, at }
 
@@ -51,8 +57,14 @@ export function take(userId, kind = "msg", now = Date.now()) {
   b.at = now;
 
   if (b.tokens < 1) {
+    // `quiet` = เกินโควตาแต่เพิ่งเตือนไปเมื่อกี้ → ผู้เรียกควร **เงียบ** ไม่ต้องตอบ
+    //
+    // จำเป็นเพราะการส่งรูปทีละหลายใบทำให้ใบที่เกินโควตามาพร้อมกันหลายใบ
+    // ตอบทุกใบ = ผู้ใช้ได้การ์ด "ขอพักแป๊บนึง" รัว ๆ 5 ใบ ซึ่งกวนกว่าตัวปัญหาเสียอีก
+    const quiet = b.warnedAt !== undefined && now - b.warnedAt < WARN_EVERY_MS;
+    if (!quiet) b.warnedAt = now;
     buckets.set(key, b);
-    return { ok: false, retryInSec: Math.ceil((1 - b.tokens) * cfg.refillMs / 1000) };
+    return { ok: false, quiet, retryInSec: Math.ceil((1 - b.tokens) * cfg.refillMs / 1000) };
   }
   b.tokens -= 1;
   buckets.set(key, b);
