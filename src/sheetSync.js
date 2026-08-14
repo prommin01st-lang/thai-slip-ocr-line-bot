@@ -15,6 +15,33 @@ import * as S from "./sheets.js";
  */
 const MAX_TRIES = 5;
 
+/**
+ * ล้มเหลวแบบ "เดี๋ยวก็หาย" — **ห้ามนับรวมกับความล้มเหลวถาวร**
+ *
+ * 429 = ยิงเกินโควตา (60 คำขอ/นาที ซึ่งนับรวมทุกคนเพราะใช้ service account ตัวเดียว)
+ * 5xx = ฝั่ง Google เอง · ไม่มี status = เน็ตหลุด/timeout
+ *
+ * เดิมนับรวมกับ 403 (ไม่ได้แชร์สิทธิ์) ทำให้ชน 429 ติดกัน 5 รอบ = 100 วินาที
+ * แล้วงานนั้นหยุดถาวร ต้องกดปุ่ม sync เองถึงจะกลับมา ทั้งที่ปัญหาหายไปเองตั้งนานแล้ว
+ */
+const isTemporary = (err) => !err.status || err.status === 429 || err.status >= 500;
+
+/** ชนกำแพงชั่วคราวแล้วถอยห่างขึ้นเรื่อย ๆ: 1 → 2 → 4 → 8 รอบ (สูงสุด ~2.5 นาที) */
+const MAX_BACKOFF_STEPS = 8;
+const backoff = new Map();   // userId → { untilMs, step }
+
+function noteTemporary(userId) {
+  const cur = backoff.get(userId);
+  const step = Math.min((cur?.step ?? 0) * 2 || 1, MAX_BACKOFF_STEPS);
+  backoff.set(userId, { step, untilMs: Date.now() + step * config.sheetSyncMs });
+  return step;
+}
+
+/** ยิงผ่านแล้ว หรือผู้ใช้กดปุ่มเอง → เลิกถอย */
+const clearBackoff = (userId) => backoff.delete(userId);
+
+const waiting = (userId) => (backoff.get(userId)?.untilMs ?? 0) > Date.now();
+
 /** ทำใบสั่งของผู้ใช้คนเดียวให้หมด — ไม่โยน error ออก (worker ต้องไปทำคนอื่นต่อ) */
 export async function syncUser(userId) {
   const jobs = L.sheetJobs(userId);
@@ -64,13 +91,30 @@ export async function syncUser(userId) {
 
     L.clearSheetJobs(ids);
     L.markSheetSync(userId, null);
+    clearBackoff(userId);
     return { done: ids.length, updated: updates.length, added: appends.length };
   } catch (err) {
-    L.failSheetJobs(ids, err.message);
     L.markSheetSync(userId, err.message);
+    if (isTemporary(err)) {
+      // ใบสั่งค้างไว้เหมือนเดิม **ไม่นับ tries** — แค่เว้นระยะก่อนลองใหม่
+      const step = noteTemporary(userId);
+      console.warn(`[ชีตติดชั่วคราว] ${userId.slice(-8)}: ${err.message} — รออีก ${step} รอบ`);
+      return { done: 0, error: err.message, temporary: true };
+    }
+    L.failSheetJobs(ids, err.message);
     console.warn(`[ชีตล้มเหลว] ${userId.slice(-8)}: ${err.message}`);
     return { done: 0, error: err.message };
   }
+}
+
+/**
+ * ผู้ใช้กดปุ่ม "sync เดี๋ยวนี้" — ยิงทันทีไม่สนโหมดและไม่สนคิวถอย
+ *
+ * การกดปุ่มคือสัญญาณชัดว่าเขากำลังรอดูผลอยู่ตรงนั้น ให้รอ backoff ต่อไม่ได้
+ */
+export function syncNow(userId) {
+  clearBackoff(userId);
+  return syncUser(userId);
 }
 
 /** หนึ่งรอบ: ไล่ทำให้ทุกคนที่มีงานค้าง */
@@ -78,7 +122,8 @@ export async function tick() {
   const users = L.sheetPendingUsers();
   let total = 0;
   for (const u of users) {
-    if (u.tries >= MAX_TRIES) continue;    // เลิกลองแล้ว รอผู้ใช้ไปแก้สิทธิ์เอง
+    if (u.tries >= MAX_TRIES) continue;         // ล้มเหลวถาวร รอผู้ใช้ไปแก้สิทธิ์เอง
+    if (waiting(u.line_user_id)) continue;      // เพิ่งชนโควตา — ยังไม่ถึงคิวลองใหม่
     const r = await syncUser(u.line_user_id);
     total += r.done ?? 0;
   }
@@ -102,3 +147,6 @@ export function stop() {
   if (timer) clearInterval(timer);
   timer = null;
 }
+
+/** ใช้ในเทสเท่านั้น */
+export function _reset() { backoff.clear(); }

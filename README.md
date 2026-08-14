@@ -85,6 +85,14 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
 - Every transaction is copied to a spreadsheet the user owns — ready for charts and formulas
 - The user just shares their own sheet with the bot's service-account address; no Google
   login, no OAuth consent screen, no per-user tokens to store
+- **One sheet per person** — a spreadsheet already linked by someone else is rejected,
+  because `ลบข้อมูลของฉัน` clears the whole tab and would wipe the other person's rows
+- **Pushes on demand by default**, not on every save: changes are queued and sent in one
+  go when the user taps the button; automatic mode is one tap away. (The Sheets API
+  allows 60 requests/minute, counted across *all* users since one service account signs
+  every call.) Hundreds of rows still cost **3 requests** — read the id column, write
+  updates, append new ones
+- Hitting the quota (429) is treated as temporary — exponential backoff, not a permanent give-up
 - **SQLite stays the source of truth; the sheet is a one-way copy** — dedup, PDPA cascade
   deletes and integer-satang money all live in DB constraints that Sheets cannot express
 - Writes go through an outbox table, so a network outage loses nothing and never delays a webhook
@@ -176,7 +184,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 173 tests.
+(`ocr/`), covered by 181 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -209,7 +217,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           173 tests, no network or GPU required — `npm test`
+test/           181 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
 assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
@@ -222,7 +230,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 173 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 181 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real

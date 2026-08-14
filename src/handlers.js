@@ -19,7 +19,7 @@ import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          shiftMonth } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseSheetId } from "./sheets.js";
-import { syncUser } from "./sheetSync.js";
+import { syncNow } from "./sheetSync.js";
 import { parseBill, MAX_ROWS } from "./billText.js";
 import * as pending from "./pending.js";
 import { parseEntries } from "./nlu.js";
@@ -174,21 +174,29 @@ const sheetStatusCard = (userId) => {
   const link = L.sheetLink(userId);
   if (!link) return sheetHelpCards();
   const waiting = L.sheetQueueDepth(userId);
+  const auto = L.sheetAuto(userId);
   return card({
     title: link.last_error ? "ชีตเชื่อมอยู่ แต่ sync ไม่ผ่าน" : "เชื่อมชีตอยู่",
     emoji: link.last_error ? "⚠️" : "📗",
-    tone: link.last_error ? "warn" : "success",
+    tone: link.last_error ? "warn" : waiting ? "info" : "success",
     rows: [
+      { label: "อัปเดตชีต", value: auto ? "อัตโนมัติ" : "เมื่อกดปุ่มเท่านั้น" },
+      { label: "รอส่งขึ้นชีต", value: waiting ? `${waiting} รายการ` : "ไม่มี", strong: waiting > 0 },
+      { label: "ส่งล่าสุด", value: link.last_sync_at ? link.last_sync_at.slice(0, 16).replace("T", " ") : "ยังไม่เคย" },
       { label: "แท็บที่เขียน", value: link.tab || "(ยังไม่ได้เขียนครั้งแรก)" },
-      { label: "sync ล่าสุด", value: link.last_sync_at ? link.last_sync_at.slice(0, 16).replace("T", " ") : "ยังไม่เคย" },
-      { label: "รอ sync", value: waiting ? `${waiting} รายการ` : "ไม่มี" },
     ],
     // ต้องโชว์สาเหตุดิบจาก Google — เกือบทุกครั้งคือ "ยังไม่ได้แชร์ชีตให้อีเมลนี้"
     // ซึ่งผู้ใช้แก้เองได้ใน 10 วินาที ถ้ารู้ว่าต้องแก้อะไร
-    notes: link.last_error ? [link.last_error] : [],
+    notes: [
+      ...(link.last_error ? [link.last_error] : []),
+      ...(!auto && waiting ? ["รายการใหม่จะถูกเก็บไว้จนกว่าจะกดส่ง — ไม่หายไปไหน"] : []),
+    ],
     actions: [
-      { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${link.spreadsheet_id}/edit`, primary: true },
-      { label: "🔄 sync เดี๋ยวนี้", data: "act=sheetsync" },
+      { label: waiting ? `🔄 ส่งขึ้นชีตเลย (${waiting})` : "🔄 ส่งขึ้นชีตเลย",
+        data: "act=sheetsync", primary: waiting > 0 },
+      { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${link.spreadsheet_id}/edit`,
+        primary: !waiting },
+      { label: auto ? "⏸ ปิดอัปเดตอัตโนมัติ" : "▶️ เปิดอัปเดตอัตโนมัติ", data: "act=sheetauto" },
       { label: "🔌 เลิกเชื่อมชีต", data: "act=sheetoff" },
     ],
     altText: "สถานะการเชื่อม Google Sheet",
@@ -210,9 +218,12 @@ const settingsCard = (userId) => {
         value: accts.length
           ? accts.map((a) => a.name_hint || `••••${a.acct_tail}`).join(", ")
           : "ยังไม่ได้จำ (จะถามตอนส่งสลิปใบแรก)" },
-      ...(config.sheetsEnabled
-        ? [{ label: "Google Sheet", value: L.sheetLink(userId) ? "เชื่อมอยู่" : "ยังไม่ได้เชื่อม" }]
-        : []),
+      ...(config.sheetsEnabled ? [{
+        label: "Google Sheet",
+        value: !L.sheetLink(userId) ? "ยังไม่ได้เชื่อม"
+          : L.sheetQueueDepth(userId) ? `รอส่ง ${L.sheetQueueDepth(userId)} รายการ`
+          : L.sheetAuto(userId) ? "อัปเดตอัตโนมัติ" : "ส่งเมื่อกดปุ่ม",
+      }] : []),
     ],
     actions: [
       { label: weeklyOn ? "🔕 ปิดสรุปรายสัปดาห์" : "🔔 เปิดสรุปรายสัปดาห์", data: "act=weekly" },
@@ -1090,8 +1101,26 @@ async function handlePostback(event) {
   if (act === "settings") return respond(event, settingsCard(userId));
 
   // --- Google Sheet ---
-  if (act === "sheet" || act === "sheetsync" || act === "sheetoff") {
+  if (act === "sheet" || act === "sheetsync" || act === "sheetoff" || act === "sheetauto") {
     if (!config.sheetsEnabled) return;      // ปิดอยู่ = ทำเหมือนไม่มีปุ่มนี้ (ปุ่มเก่าในแชทยังกดได้)
+    if (act === "sheetauto") {
+      if (!L.sheetLink(userId)) return respond(event, sheetHelpCards());
+      const on = !L.sheetAuto(userId);
+      L.setPref(userId, "sheet_auto", on ? "on" : "off");
+      const waiting = L.sheetQueueDepth(userId);
+      // เปิดอัตโนมัติทั้งที่มีของค้าง → ส่งให้เลย ไม่ต้องรอรอบถัดไป
+      if (on && waiting) await syncNow(userId);
+      return respond(event, card({
+        title: on ? "เปิดอัปเดตอัตโนมัติแล้ว" : "ปิดอัปเดตอัตโนมัติแล้ว",
+        emoji: on ? "▶️" : "⏸", tone: "success",
+        text: on
+          ? "ทุกรายการใหม่จะขึ้นชีตให้เองภายในไม่กี่วินาที"
+          : "รายการใหม่จะถูกเก็บไว้ก่อน แล้วส่งขึ้นชีตทีเดียวตอนคุณกดปุ่ม\n"
+            + "ไม่มีอะไรหาย และประหยัดโควตาเรียก Google ด้วย",
+        rows: on && waiting ? [{ label: "ส่งของที่ค้างให้แล้ว", value: `${waiting} รายการ` }] : [],
+        actions: [{ label: "📗 ดูสถานะชีต", data: "act=sheet", primary: true }],
+      }));
+    }
     if (act === "sheetoff") {
       const had = L.unlinkSheet(userId);
       return respond(event, card({
@@ -1105,7 +1134,7 @@ async function handlePostback(event) {
     }
     if (act === "sheetsync") {
       if (!L.sheetLink(userId)) return respond(event, sheetHelpCards());
-      const r = await syncUser(userId);
+      const r = await syncNow(userId);
       return respond(event, r.error
         ? card({ title: "sync ไม่ผ่าน", emoji: "⚠️", tone: "warn",
                  text: "ส่วนใหญ่เกิดจากยังไม่ได้แชร์ชีตให้อีเมลของระบบ (สิทธิ์ “ผู้แก้ไข”)",
@@ -1631,8 +1660,22 @@ async function handleText(event) {
       : null;
     if (sid) {
       if (!L.hasConsent(userId)) return respond(event, consentCard());
+      // ⚠️ ชีตแผ่นเดียวห้ามถูกผูกโดยหลายคน
+      //
+      // "ลบข้อมูลของฉัน" ล้างชีตด้วย values:clear ทั้งช่วง A2:Z — ถ้าสองคนใช้แผ่นเดียวกัน
+      // คนหนึ่งกดลบแล้วรายการของอีกคนหายไปด้วยโดยไม่มีอะไรในระบบรู้ว่าเกิดขึ้น
+      // (แถวไม่ชนกันเพราะ txns.id ไม่ซ้ำข้ามผู้ใช้ มันจึง "ดูเหมือนใช้ได้" จนถึงวันนั้น)
+      if (L.sheetTakenBy(sid, userId)) {
+        return respond(event, card({
+          title: "ชีตนี้มีคนใช้อยู่แล้ว", emoji: "🔒", tone: "warn",
+          text: "ชีตหนึ่งแผ่นผูกได้กับคนเดียวครับ\n\n"
+              + "สร้างชีตเปล่าขึ้นมาใหม่อีกไฟล์ แชร์ให้อีเมลเดิม แล้วส่งลิงก์ใหม่เข้ามาได้เลย",
+          notes: ["ถ้าใช้แผ่นเดียวกัน เวลาใครสักคนสั่งลบข้อมูลตัวเอง รายการของอีกคนจะหายไปด้วย"],
+          altText: "ชีตนี้มีผู้ใช้อื่นผูกไว้แล้ว",
+        }));
+      }
       const queued = L.linkSheet(userId, sid);
-      const r = await syncUser(userId);      // ยิงทันที ผู้ใช้จะได้รู้ผลเดี๋ยวนี้ ไม่ต้องเดา
+      const r = await syncNow(userId);      // ยิงทันที ผู้ใช้จะได้รู้ผลเดี๋ยวนี้ ไม่ต้องเดา
       if (r.error) {
         return respond(event, [card({
           title: "เชื่อมแล้ว แต่เขียนลงชีตไม่ได้", emoji: "⚠️", tone: "warn",
@@ -1649,12 +1692,14 @@ async function handleText(event) {
           { label: "คัดลอกขึ้นชีต", value: `${queued} รายการ` },
           { label: "แท็บ", value: L.sheetLink(userId)?.tab ?? "-" },
         ],
-        text: "ต่อจากนี้ทุกรายการใหม่จะขึ้นชีตให้เองภายในไม่กี่วินาที",
-        notes: ["ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ",
+        // ต้องบอกให้ชัดว่าเป็นโหมดกดเอง ไม่งั้นผู้ใช้จะรอชีตอัปเดตเองแล้วคิดว่าระบบพัง
+        text: "ของเก่าเติมให้แล้ว ส่วนรายการใหม่จะถูกเก็บไว้ก่อน\nแล้วส่งขึ้นชีตทีเดียวตอนคุณกดปุ่ม “ส่งขึ้นชีตเลย”",
+        notes: ["อยากให้ขึ้นเองทุกครั้ง เปิดอัปเดตอัตโนมัติได้ในหน้าสถานะชีต",
+                "ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ",
                 "ลบข้อมูลของฉัน = ล้างข้อมูลบนชีตให้ด้วย"],
         actions: [
           { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${sid}/edit`, primary: true },
-          { label: "⚙️ ตั้งค่า", data: "act=settings" },
+          { label: "📗 สถานะชีต", data: "act=sheet" },
         ],
         altText: `เชื่อม Google Sheet แล้ว — คัดลอก ${queued} รายการ`,
       }));

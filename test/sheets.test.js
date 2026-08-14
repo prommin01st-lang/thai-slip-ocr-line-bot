@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { open } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as S from "../src/sheets.js";
-import { syncUser } from "../src/sheetSync.js";
+import { syncUser, syncNow, tick, _reset as resetSync } from "../src/sheetSync.js";
 
 L.setDb(open(":memory:"));
 S._setToken("fake-token-for-test");
@@ -188,5 +188,106 @@ const ranged = find((c) => c.url.includes(":append"))[0];
 assert.match(decodeURIComponent(ranged.url), /'รายการ ปี 2026'!A:A/,
   "ชื่อแท็บที่มีช่องว่างต้องถูกครอบด้วยอัญประกาศเดี่ยว ไม่งั้น Sheets ตีความช่วงผิด");
 ok("ชื่อแท็บภาษาไทยและมีช่องว่าง ใช้งานได้");
+
+// --- ชีตแผ่นเดียวห้ามถูกผูกโดยหลายคน ---
+//
+// ถ้าปล่อยให้ผูกซ้ำได้ แถวจะไม่ชนกัน (txns.id ไม่ซ้ำข้ามผู้ใช้) จนดูเหมือนใช้ได้
+// แต่วันที่ใครสักคนกด "ลบข้อมูลของฉัน" values:clear จะล้าง A2:Z ทั้งแผ่น
+// = รายการของอีกคนหายไปด้วยโดยไม่มีอะไรในระบบรู้
+const U3 = "Usheet00000000000000000000000003";
+L.ensureUser(U3, "คนที่สาม");
+L.grantConsent(U3);
+L.linkSheet(U3, "1SharedSheetIdAAAAAAAAAAAAAAAAAAAAAAAA");
+assert.equal(L.sheetTakenBy("1SharedSheetIdAAAAAAAAAAAAAAAAAAAAAAAA", U2), U3,
+  "ต้องบอกได้ว่าชีตนี้มีคนอื่นผูกอยู่");
+assert.equal(L.sheetTakenBy("1SharedSheetIdAAAAAAAAAAAAAAAAAAAAAAAA", U3), null,
+  "เจ้าของเดิมผูกชีตเดิมซ้ำได้ (เชื่อมใหม่ทับของตัวเอง)");
+assert.equal(L.sheetTakenBy("1NobodyUsesThisIdBBBBBBBBBBBBBBBBBBBB", U2), null);
+ok("ตรวจได้ว่าชีตถูกผูกโดยคนอื่นแล้ว — กันข้อมูลของคนอื่นถูกล้างทิ้ง");
+
+// --- โหมด sync: ค่าเริ่มต้นคือกดเอง ---
+resetSync();
+const U4 = "Usheet00000000000000000000000004";
+L.ensureUser(U4, "คนที่สี่");
+L.grantConsent(U4);
+L.linkSheet(U4, "1AutoModeSheetCCCCCCCCCCCCCCCCCCCCCCC");
+L.clearSheetJobs(L.sheetJobs(U4).map((j) => j.id));
+L.recordEntry(U4, { direction: "out", amountCents: 100, note: "รอกดส่ง" });
+
+assert.equal(L.sheetAuto(U4), false, "ค่าเริ่มต้นต้องเป็นโหมดกดเอง");
+assert.ok(L.sheetQueueDepth(U4) > 0, "ใบสั่งต้องถูกจดไว้ครบแม้ยังไม่ส่ง");
+assert.ok(!L.sheetPendingUsers().some((u) => u.line_user_id === U4),
+  "โหมดกดเอง → worker ต้องไม่หยิบไปทำ");
+
+reset();
+await tick();
+assert.equal(calls.length, 0, "worker ต้องไม่ยิง API ให้คนที่ยังไม่เปิดอัตโนมัติ");
+ok("โหมดกดเอง: จดใบสั่งไว้ครบ แต่ไม่ยิง API สักครั้ง");
+
+// กดปุ่มส่งเอง → ยิงจริง
+reset();
+await syncNow(U4);
+assert.ok(calls.length > 0, "กดปุ่มแล้วต้องยิงจริง");
+assert.equal(L.sheetQueueDepth(U4), 0, "ส่งแล้วใบสั่งต้องหมด");
+ok("กดปุ่มส่งเอง → ยิงทันทีไม่สนโหมด");
+
+// เปิดอัตโนมัติ → worker หยิบไปทำเอง
+L.setPref(U4, "sheet_auto", "on");
+L.recordEntry(U4, { direction: "out", amountCents: 200, note: "อัตโนมัติ" });
+assert.ok(L.sheetPendingUsers().some((u) => u.line_user_id === U4), "เปิดแล้ว worker ต้องเห็น");
+reset();
+await tick();
+assert.equal(L.sheetQueueDepth(U4), 0, "worker ต้องส่งให้เอง");
+ok("เปิดอัตโนมัติ → worker ส่งให้เองตามรอบ");
+
+// --- wipe ต้องหลุดออกไปเสมอ แม้อยู่โหมดกดเอง (PDPA) ---
+//
+// จุดที่พลาดง่ายมาก: คนที่กด "ลบข้อมูลของฉัน" จะไม่มีปุ่มให้กดส่งอีกแล้ว
+// เพราะแถวใน sheet_links ถูก CASCADE ลบไปพร้อม users — ถ้ารอผู้ใช้กด
+// ข้อมูลจะค้างบน Google ตลอดไปทั้งที่เขาสั่งลบแล้ว
+L.setPref(U4, "sheet_auto", "off");
+L.recordEntry(U4, { direction: "out", amountCents: 300, note: "ก่อนลบ" });
+L.deleteAllData(U4);
+assert.ok(L.sheetPendingUsers().some((u) => u.line_user_id === U4),
+  "ใบสั่ง wipe ต้องถูกหยิบไปทำแม้อยู่โหมดกดเอง");
+reset();
+await tick();
+assert.ok(find((c) => c.url.includes(":clear")).length > 0, "ต้องล้างชีตจริง");
+assert.equal(L.sheetQueueDepth(U4), 0);
+ok("ลบข้อมูลของฉัน → ล้างชีตทันทีเสมอ ไม่รอผู้ใช้กดปุ่ม");
+
+// --- 429 คือปัญหาชั่วคราว ห้ามนับเป็นความล้มเหลวถาวร ---
+resetSync();
+const U5 = "Usheet00000000000000000000000005";
+L.ensureUser(U5, "คนที่ห้า");
+L.grantConsent(U5);
+L.linkSheet(U5, "1QuotaSheetDDDDDDDDDDDDDDDDDDDDDDDDDD");
+L.setPref(U5, "sheet_auto", "on");
+L.recordEntry(U5, { direction: "out", amountCents: 100, note: "ตัวที่จะชนโควตา" });
+sheetColumnA = [["id"]];
+
+failWith = { status: 429, message: "Quota exceeded for quota metric 'Write requests'" };
+let r5 = await syncUser(U5);
+assert.equal(r5.temporary, true, "429 ต้องถูกจัดเป็นปัญหาชั่วคราว");
+assert.equal(L.sheetJobs(U5)[0].tries, 0,
+  "ห้ามนับ tries — ไม่งั้นชนโควตา 5 รอบแล้วงานหยุดถาวรทั้งที่ปัญหาหายไปเอง");
+// คิวถอยอยู่ในหน่วยความจำของ worker (ไม่ใช่ใน DB) — ต้องวัดที่ tick() ว่ายิงหรือไม่
+reset();
+await tick();
+assert.equal(calls.length, 0, "ระหว่างถอย worker ต้องไม่ยิงซ้ำทันที");
+ok("ชนโควตา 429 → ถอยห่างแล้วลองใหม่ ไม่นับเป็นความล้มเหลว");
+
+// 403 คือสิทธิ์ผิด ลองใหม่ก็ไม่หาย → ต้องนับ tries ตามเดิม
+failWith = { status: 403, message: "The caller does not have permission" };
+await syncNow(U5);
+assert.equal(L.sheetJobs(U5)[0].tries, 1, "403 ต้องนับ tries");
+ok("403 (ไม่ได้แชร์สิทธิ์) → นับเป็นความล้มเหลวถาวรตามเดิม");
+
+// แก้แล้วกดปุ่มเอง → ข้ามคิวถอยทันที
+failWith = null;
+const r5ok = await syncNow(U5);
+assert.equal(r5ok.error, undefined, "กดปุ่มเองต้องยิงได้เลย ไม่ต้องรอ backoff หมดเวลา");
+assert.equal(L.sheetQueueDepth(U5), 0);
+ok("กดปุ่มเอง → ข้ามคิวถอยทันที (ผู้ใช้กำลังรอดูผลอยู่)");
 
 console.log(`\nsheets.test: ${pass}/${pass} ผ่าน ✅`);

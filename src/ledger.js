@@ -823,6 +823,24 @@ export function sheetLink(userId) {
   return db().prepare("SELECT * FROM sheet_links WHERE line_user_id = ?").get(userId) ?? null;
 }
 
+/**
+ * มีคน**อื่น**ผูกชีตแผ่นนี้ไว้แล้วหรือเปล่า → คืน line_user_id ของเขา
+ *
+ * ต้องกันไว้เพราะ "ลบข้อมูลของฉัน" ล้างชีตด้วย `values:clear` ทั้งช่วง A2:Z
+ * ถ้าสองคนผูกแผ่นเดียวกัน คนหนึ่งกดลบ = รายการของอีกคนหายไปด้วยทั้งที่ไม่ได้สั่งอะไร
+ * และเป็นความเสียหายที่ไม่มีอะไรในระบบรู้ว่าเกิดขึ้น
+ *
+ * (แถวไม่ชนกันเพราะ `txns.id` ไม่ซ้ำข้ามผู้ใช้ — มันจึง "ดูเหมือนใช้ได้" จนถึงวันนั้น)
+ */
+export function sheetTakenBy(spreadsheetId, exceptUserId) {
+  return db().prepare(`SELECT line_user_id FROM sheet_links
+                       WHERE spreadsheet_id = ? AND line_user_id != ?`)
+    .get(spreadsheetId, exceptUserId)?.line_user_id ?? null;
+}
+
+/** โหมด sync อัตโนมัติเปิดอยู่ไหม — **ค่าเริ่มต้นคือปิด** (กดปุ่ม sync เอง) */
+export const sheetAuto = (userId) => getPref(userId, "sheet_auto") === "on";
+
 /** เชื่อมชีต แล้ว **คิวทุกรายการที่มีอยู่** ไปเติมย้อนหลัง ไม่ใช่เริ่มนับจากศูนย์ */
 export function linkSheet(userId, spreadsheetId, tab = null) {
   const d = db();
@@ -872,11 +890,26 @@ export function queueSheet(userId, op, txnId = null, payload = null) {
   return true;
 }
 
-/** ผู้ใช้ที่มีงานค้าง — worker วนตามนี้ ทีละคน */
+/**
+ * ผู้ใช้ที่ worker ควรไปทำงานให้ — **เฉพาะคนที่เปิด sync อัตโนมัติ**
+ *
+ * ค่าเริ่มต้นคือปิด: ใบสั่งยังถูกจดไว้ครบทุกครั้งที่ข้อมูลเปลี่ยน แต่จะไม่ถูกยิงออกไป
+ * จนกว่าผู้ใช้จะกดปุ่ม sync เอง — ประหยัดโควตา Sheets API (60 คำขอ/นาที ซึ่งนับรวม
+ * ทุกคนเพราะใช้ service account ตัวเดียว) และไม่มีใครต้องจ่ายค่าเรียก API ให้กับ
+ * รายการที่เจ้าตัวยังไม่อยากดูบนชีต
+ *
+ * ⚠️ **`wipe` ต้องหลุดออกไปเสมอไม่ว่าโหมดไหน** — เป็นคำสั่งจาก "ลบข้อมูลของฉัน"
+ * ถ้ารอผู้ใช้กดปุ่ม ข้อมูลจะค้างบน Google ต่อไปทั้งที่เขาสั่งลบแล้ว (ผิด PDPA)
+ * และตอนนั้นเขาไม่มีปุ่มให้กดด้วยซ้ำ เพราะแถวใน sheet_links ถูกลบไปพร้อม users แล้ว
+ */
 export function sheetPendingUsers(limit = 20) {
   return db().prepare(`
-    SELECT line_user_id, COUNT(*) n, MIN(tries) tries FROM sheet_outbox
-    GROUP BY line_user_id ORDER BY MIN(id) LIMIT ?`).all(limit);
+    SELECT o.line_user_id, COUNT(*) n, MIN(o.tries) tries FROM sheet_outbox o
+    LEFT JOIN prefs p ON p.line_user_id = o.line_user_id AND p.key = 'sheet_auto'
+    WHERE COALESCE(p.value, 'off') = 'on'
+       OR EXISTS (SELECT 1 FROM sheet_outbox w
+                  WHERE w.line_user_id = o.line_user_id AND w.op = 'wipe')
+    GROUP BY o.line_user_id ORDER BY MIN(o.id) LIMIT ?`).all(limit);
 }
 
 export function sheetJobs(userId, limit = 200) {
