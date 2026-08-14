@@ -376,6 +376,101 @@ export function categoryButtons(txnId, current, { all = false } = {}) {
   return rows;
 }
 
+// ==================== การ์ดสอนวิธีเชื่อม Google Sheet ====================
+
+/** สีจากตัวมาสคอต (เสื้อกับหนังสือสีม่วง) — ใช้เป็นสีประจำเรื่อง "ชีต" */
+const SHEET_PURPLE = "#6B5B95";
+const SHEET_TINT = "#EFEBF7";
+
+/**
+ * ขั้นตอนหนึ่งบรรทัด: เลขในวงกลม + คำอธิบาย
+ *
+ * ใช้วงกลมเลขแทนบูลเล็ตเพราะการ์ดนี้ต้องอ่าน**ตามลำดับ** — ผู้ใช้ที่ข้ามไปแชร์
+ * ก่อนสร้างชีตจะงงว่าจะแชร์อะไร ส่วนคนที่ส่งลิงก์ก่อนแชร์จะเจอ error สิทธิ์
+ */
+const sheetStep = (n, text) => ({
+  type: "box", layout: "horizontal", spacing: "md", margin: "lg",
+  contents: [
+    {
+      type: "box", layout: "vertical", flex: 0,
+      width: "26px", height: "26px", cornerRadius: "13px",
+      backgroundColor: SHEET_PURPLE, justifyContent: "center",
+      contents: [txt(String(n), { size: "sm", color: "#FFFFFF", weight: "bold", align: "center" })],
+    },
+    txt(text, { size: "sm", color: "#333333", flex: 1, gravity: "center" }),
+  ],
+});
+
+/**
+ * การ์ดวิธีเชื่อมชีต พร้อมมาสคอต
+ *
+ * **มาสคอตชี้ไปทางขวา จึงวางไว้ซ้ายของหัวข้อ** — ทิศทางการชี้พาสายตาไปที่ข้อความ
+ * ถ้าวางขวาจะชี้ออกนอกการ์ด
+ *
+ * `mascotUrl` ว่างได้ (ยังไม่ได้ตั้ง PUBLIC_URL) → การ์ดยังใช้ได้ครบ แค่ไม่มีรูป
+ * LINE ต้องดึงรูปจาก URL สาธารณะเสมอ ฝัง base64 ไม่ได้
+ */
+export function sheetGuideMessage({ mascotUrl = null, email = null } = {}) {
+  const head = {
+    type: "box", layout: "horizontal", backgroundColor: SHEET_TINT,
+    paddingAll: "lg", spacing: "md",
+    contents: [
+      ...(mascotUrl ? [{
+        type: "image", url: mascotUrl, flex: 2,
+        // อัตราส่วนตรงกับไฟล์จริง (548×773) ไม่งั้น LINE ยืดรูปให้เพี้ยน
+        aspectRatio: "548:773", aspectMode: "fit", size: "full", align: "center",
+      }] : []),
+      {
+        type: "box", layout: "vertical", flex: 5, spacing: "xs", justifyContent: "center",
+        contents: [
+          txt("เชื่อม Google Sheet", { size: "lg", weight: "bold", color: SHEET_PURPLE }),
+          txt("ตั้งครั้งเดียว รายการในบอทจะขึ้นชีตของคุณเอง เอาไปทำกราฟหรือสูตรต่อได้",
+              { size: "xs", color: "#6A6A6A" }),
+        ],
+      },
+    ],
+  };
+
+  const body = {
+    type: "box", layout: "vertical", paddingAll: "lg",
+    contents: [
+      sheetStep(1, "สร้าง Google Sheet เปล่าไว้ 1 ไฟล์ (กดปุ่มข้างล่างได้เลย)"),
+      sheetStep(2, "ในชีตกด “แชร์” → วางอีเมลที่ผมส่งให้ในข้อความถัดไป → เลือกสิทธิ์ “ผู้แก้ไข”"),
+      sheetStep(3, "ก๊อปลิงก์ชีตจากแถบที่อยู่ แล้วส่งกลับมาที่แชทนี้"),
+      { type: "separator", margin: "xl" },
+      {
+        type: "box", layout: "vertical", margin: "lg", spacing: "xs",
+        paddingAll: "md", cornerRadius: "md", backgroundColor: "#F7F5F2",
+        contents: [
+          txt("• ชีตเป็นของคุณคนเดียว ถอนสิทธิ์เมื่อไหร่ก็ได้", { size: "xxs", color: "#7A7A7A" }),
+          txt("• ข้อมูลจะถูกส่งออกไปเก็บที่ Google ซึ่งอยู่นอกเครื่องผู้ดูแล", { size: "xxs", color: "#7A7A7A" }),
+          txt("• ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ", { size: "xxs", color: "#7A7A7A" }),
+        ],
+      },
+    ],
+  };
+
+  return {
+    type: "flex",
+    altText: "วิธีเชื่อม Google Sheet — สร้างชีต แชร์ให้บอท แล้วส่งลิงก์กลับมา",
+    contents: {
+      type: "bubble", size: "mega", header: head, body,
+      footer: {
+        type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
+        contents: [
+          // sheets.new เปิดชีตเปล่าใหม่ทันทีในบัญชีที่ล็อกอินอยู่ — ตัดขั้นตอน
+          // "เข้า Drive แล้วหาปุ่มสร้าง" ซึ่งเป็นจุดที่คนไม่คุ้นเคยหลุดบ่อยที่สุด
+          { type: "button", height: "sm", style: "primary", color: SHEET_PURPLE,
+            action: { type: "uri", label: "📄 สร้างชีตใหม่เลย", uri: "https://sheets.new" } },
+          txt(email ? "อีเมลสำหรับกด “แชร์” อยู่ในข้อความถัดไป (กดค้างเพื่อคัดลอก)"
+                    : "ส่งลิงก์ชีตกลับมาที่แชทนี้ได้เลย",
+              { size: "xxs", color: "#8A8A8A", align: "center" }),
+        ],
+      },
+    },
+  };
+}
+
 /** ปุ่มจัดการรายการที่เพิ่งบันทึก */
 export function txnActions(txnId, text) {
   return {

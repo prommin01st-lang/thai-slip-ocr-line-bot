@@ -16,7 +16,7 @@ import { take } from "./ratelimit.js";
 import { collect } from "./batch.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          summaryBubble, txnListBubble, categoryButtons, categoryPickerBubble,
-         shiftMonth } from "./flex.js";
+         shiftMonth, sheetGuideMessage } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseSheetId } from "./sheets.js";
 import { syncNow } from "./sheetSync.js";
@@ -151,22 +151,11 @@ const exportCard = (userId) => {
  * ตัวอักษรใน Flex คัดลอกไม่ได้ (ข้อจำกัดของ LINE) และอีเมลนี้ยาว 40+ ตัวอักษร
  * แบบพิมพ์ตามมือไม่ไหว — เหมือนกรณี LINE user ID ที่เจอมาแล้ว
  */
+/** รูปมาสคอตต้องมี URL สาธารณะ — LINE ไปดึงเอง ฝัง base64 ไม่ได้ (ดู route /mascot) */
+const mascot = (file) => (config.publicUrl ? `${config.publicUrl}/mascot/${file}` : null);
+
 const sheetHelpCards = () => [
-  card({
-    title: "เชื่อม Google Sheet ของคุณ", emoji: "📗", tone: "info",
-    text: "รายการทั้งหมดจะถูกคัดลอกขึ้นชีตของคุณเองอัตโนมัติ เอาไปทำกราฟหรือสูตรต่อได้ตามใจ",
-    rows: [
-      { label: "ขั้นที่ 1", value: "สร้าง Google Sheet เปล่าไว้ 1 ไฟล์" },
-      { label: "ขั้นที่ 2", value: "กด “แชร์” ใส่อีเมลข้างล่างนี้ เลือกสิทธิ์ “ผู้แก้ไข”" },
-      { label: "ขั้นที่ 3", value: "ส่งลิงก์ชีตเข้ามาในแชทนี้ได้เลย" },
-    ],
-    notes: [
-      "ชีตเป็นของคุณคนเดียว — ถอนสิทธิ์เมื่อไหร่ก็ได้จากในชีตเอง",
-      "ข้อมูลจะถูกส่งออกไปเก็บไว้ที่ Google ซึ่งอยู่นอกเครื่องของผู้ดูแลระบบ",
-      "ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับในรอบถัดไป",
-    ],
-    altText: "วิธีเชื่อม Google Sheet",
-  }),
+  sheetGuideMessage({ mascotUrl: mascot("Stand-1.png"), email: config.googleSaEmail }),
   { type: "text", text: config.googleSaEmail },
 ];
 

@@ -4,7 +4,7 @@ import { open, toCents, fromCents, nowLocal } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as N from "../src/notify.js";
 import { summaryBubble, txnListBubble, askDirection, txnActions, askPeriod, thaiMonth,
-         categoryPickerBubble,
+         categoryPickerBubble, sheetGuideMessage,
          categoryButtons } from "../src/flex.js";
 import { summaryMessage } from "../src/handlers.js";
 import * as H from "../src/handlers.js";
@@ -796,5 +796,31 @@ const none = H.batchSlipCard(U, 3, [], [], 3);
 validFlex(none.contents, "batchSlipCard-empty");
 assert.ok(JSON.stringify(none).includes("ไม่ได้บันทึกสักใบ"), "ต้องพูดตรง ๆ ว่าไม่ได้บันทึกอะไรเลย");
 ok("สลิปซ้ำทั้งชุด → การ์ดยังถูกกติกา ไม่ใช่กล่องเปล่า");
+
+// --- การ์ดสอนวิธีเชื่อม Google Sheet ---
+//
+// การ์ดนี้มีรูปจาก URL ภายนอก ซึ่งเป็นจุดที่พังเงียบได้สองแบบ:
+// ไม่ได้ตั้ง PUBLIC_URL แล้ว url กลายเป็น undefined (LINE ตอบ 400) หรือ
+// อัตราส่วนไม่ตรงไฟล์จริงแล้วรูปถูกยืด
+const guide = sheetGuideMessage({
+  mascotUrl: "https://example.com/mascot/Stand-1.png",
+  email: "bot@project.iam.gserviceaccount.com",
+});
+validFlex(guide.contents, "sheetGuide");
+const guideJson = JSON.stringify(guide);
+assert.ok(guideJson.includes("Stand-1.png"), "ต้องมีรูปมาสคอตเมื่อมี PUBLIC_URL");
+assert.ok(guideJson.includes("548:773"), "อัตราส่วนต้องตรงไฟล์จริง ไม่งั้นรูปถูกยืด");
+assert.ok(guideJson.includes("https://sheets.new"), "ต้องมีปุ่มสร้างชีตใหม่");
+assert.ok(/ขั้น|1.*2.*3/s.test(guideJson), "ต้องมีลำดับขั้นตอน");
+assert.ok(guide.altText.length > 0 && guide.altText.length <= 400);
+ok("การ์ดสอนเชื่อมชีต: มีมาสคอต อัตราส่วนตรงไฟล์ และปุ่มสร้างชีต");
+
+// ไม่ได้ตั้ง PUBLIC_URL → ต้องไม่มี image node ที่ url ว่าง แต่การ์ดยังใช้ได้ครบ
+const noPic = sheetGuideMessage({ email: "bot@project.iam.gserviceaccount.com" });
+validFlex(noPic.contents, "sheetGuide-nopic");
+assert.ok(!JSON.stringify(noPic).includes('"type":"image"'),
+  "ไม่มี PUBLIC_URL ต้องไม่ใส่ image ที่ url ว่าง (LINE ตอบ 400)");
+assert.ok(JSON.stringify(noPic).includes("แชร์"), "ขั้นตอนต้องยังอยู่ครบ");
+ok("ยังไม่ได้ตั้ง PUBLIC_URL → การ์ดยังใช้ได้ แค่ไม่มีรูป");
 
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);
