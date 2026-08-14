@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { open } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as S from "../src/sheets.js";
-import { syncUser, syncNow, tick, _reset as resetSync } from "../src/sheetSync.js";
+import { syncUser, syncNow, tick, buildDashboard, _reset as resetSync } from "../src/sheetSync.js";
+import { dashboardValues } from "../src/dashboard.js";
 
 L.setDb(open(":memory:"));
 S._setToken("fake-token-for-test");
@@ -21,6 +22,7 @@ const SID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
 // --- fetch ปลอม ---
 let calls = [];
 let sheetColumnA = [["id"]];          // สิ่งที่ "มีอยู่บนชีต" ตอนนี้ (คอลัมน์ A)
+let sheetTabs = [{ title: "ชีต1", sheetId: 0 }];
 let failWith = null;                   // ตั้งเพื่อจำลอง error จาก Google
 
 const jsonRes = (body, status = 200) => ({
@@ -35,8 +37,12 @@ globalThis.fetch = async (url, opts = {}) => {
   calls.push({ url: u, method, body: opts.body ? JSON.parse(opts.body) : null });
 
   if (failWith) return jsonRes({ error: { message: failWith.message } }, failWith.status);
-  if (u.includes("fields=sheets.properties.title")) {
-    return jsonRes({ sheets: [{ properties: { title: "ชีต1" } }] });
+  if (u.includes("fields=sheets.properties")) {
+    return jsonRes({ sheets: sheetTabs.map((p) => ({ properties: p })) });
+  }
+  // spreadsheets:batchUpdate (สร้างแท็บ) — คนละเส้นกับ values:batchUpdate
+  if (u.endsWith(":batchUpdate") && !u.includes("/values")) {
+    return jsonRes({ replies: [{ addSheet: { properties: { title: "สรุป", sheetId: 99 } } }] });
   }
   if (method === "GET" && u.includes("/values/")) return jsonRes({ values: sheetColumnA });
   return jsonRes({});
@@ -289,5 +295,85 @@ const r5ok = await syncNow(U5);
 assert.equal(r5ok.error, undefined, "กดปุ่มเองต้องยิงได้เลย ไม่ต้องรอ backoff หมดเวลา");
 assert.equal(L.sheetQueueDepth(U5), 0);
 ok("กดปุ่มเอง → ข้ามคิวถอยทันที (ผู้ใช้กำลังรอดูผลอยู่)");
+
+// --- คอลัมน์เดือน (ฐานของแดชบอร์ดทั้งหน้า) ---
+//
+// ต้องตรงกับ DATE_OF ที่ SQL ใช้เป๊ะ ไม่งั้นยอดในแดชบอร์ดจะไม่ตรงกับการ์ด "สรุป"
+// ของบอทเอง ซึ่งผู้ใช้เห็นทันทีและหาสาเหตุเองไม่ได้
+assert.equal(L.SHEET_HEADERS[L.SHEET_HEADERS.length - 1], "เดือน", "คอลัมน์สุดท้ายต้องเป็นเดือน");
+assert.equal(L.sheetMonth({ occurred_at: "2026-01-25 14:32" }), "2026-01");
+assert.equal(L.sheetMonth({ created_at: "2026-01-31T20:00:00.000Z" }), "2026-02",
+  "ไม่มี occurred_at → ใช้ created_at บวก 7 ชม. เหมือน DATE_OF (สิ้นเดือนตอนดึกต้องข้ามเดือน)");
+assert.equal(L.sheetMonth({}), "");
+const monthCell = L.sheetValues({
+  id: 1, direction: "out", amount_cents: 6000, currency: "THB",
+  occurred_at: "2026-03-05 10:00", source: "chat", status: "confirmed", created_at: "2026-03-05T03:00:00Z",
+}).at(-1);
+assert.equal(monthCell, "'2026-03",
+  "ต้องมี ' นำหน้า ไม่งั้น Sheets ตีความ 2026-03 เป็นวันที่แล้วสูตรที่เทียบข้อความไม่เจอสักแถว");
+ok("คอลัมน์เดือน: ตรงกับ DATE_OF ของ SQL และถูกบังคับให้เป็นข้อความ");
+
+// --- แดชบอร์ด: เลขแถวในสูตรต้องชี้ตรงตำแหน่งจริง ---
+//
+// จุดที่พังง่ายและไม่มี error ให้เห็น — แทรกบรรทัดเดียวข้างบนแล้ว "คงเหลือ" จะชี้ผิดแถว
+// ได้ตัวเลขที่ดูสมเหตุสมผลแต่ผิด ซึ่งแย่กว่าหน้าพังไปเลย
+const dash = dashboardValues("รายการ");
+const cellAt = (label) => {
+  const i = dash.findIndex((r) => r[0] === label);
+  return { row: i + 1, formula: dash[i]?.[1] ?? "" };
+};
+const inRow = cellAt("รายรับ"), outRow = cellAt("รายจ่าย"), net = cellAt("คงเหลือ");
+assert.equal(net.formula, `=B${inRow.row}-B${outRow.row}`, "คงเหลือต้องลบจากแถวรายรับ/รายจ่ายจริง");
+const inAll = cellAt("รายรับรวม"), outAll = cellAt("รายจ่ายรวม"), netAll = cellAt("คงเหลือสะสม");
+assert.equal(netAll.formula, `=B${inAll.row}-B${outAll.row}`, "คงเหลือสะสมก็เช่นกัน");
+ok("แดชบอร์ด: สูตรคงเหลืออ้างอิงแถวจริง ไม่ใช่เลขที่เขียนตายตัว");
+
+// SPARKLINE ต้องครอบช่วง 12 เดือนพอดี ไม่กินหัวตารางและไม่ขาดแถวท้าย
+const spark = dash.find((r) => r[0] === "กราฟรายจ่าย")[1];
+const [, from, to] = /C(\d+):C(\d+)/.exec(spark);
+assert.equal(Number(to) - Number(from) + 1, 12, "กราฟต้องครอบ 12 เดือนพอดี");
+assert.equal(dash[Number(from) - 2][0], "เดือน", "แถวก่อนช่วงกราฟต้องเป็นหัวตาราง");
+assert.ok(dash[Number(to) - 1][1].includes("EOMONTH(TODAY(),-0)"), "แถวสุดท้ายต้องเป็นเดือนปัจจุบัน");
+ok("แดชบอร์ด: ช่วงกราฟตรงกับตาราง 12 เดือนพอดี");
+
+// QUERY ต้องถูกแทนค่าเดือนแล้ว และไม่มีเซลล์ว่างชนิด null หลุดไปหา Sheets
+const q = dash.at(-1)[0];
+assert.ok(!q.includes("date_month"), "ต้องแทนค่าเดือนใน QUERY แล้ว");
+assert.ok(q.includes('&TEXT(TODAY(),"yyyy-mm")&'), "ต้องต่อสตริงเดือนปัจจุบันเข้าไปในเงื่อนไข");
+assert.ok(dash.every((r) => r.every((c) => c === "" || typeof c === "string")),
+  "ทุกเซลล์ต้องเป็นสตริง — null ทำให้ Sheets API ปฏิเสธทั้งคำขอ");
+ok("แดชบอร์ด: QUERY แทนค่าเดือนครบ และไม่มีเซลล์ว่างชนิดผิด");
+
+// ชื่อแท็บที่มีอัญประกาศต้องถูก escape (ผู้ใช้ตั้งชื่อแท็บเองได้)
+assert.ok(dashboardValues("ราย'การ")[4][1].includes("'ราย''การ'!"),
+  "อัญประกาศในชื่อแท็บต้องถูกเขียนเป็นสองตัว ไม่งั้นสูตรพังทั้งหน้า");
+ok("แดชบอร์ด: ชื่อแท็บแปลก ๆ ไม่ทำให้สูตรพัง");
+
+// --- สร้างแท็บแดชบอร์ดผ่าน API ---
+resetSync();
+const U6 = "Usheet00000000000000000000000006";
+L.ensureUser(U6, "คนที่หก");
+L.grantConsent(U6);
+L.linkSheet(U6, "1DashSheetEEEEEEEEEEEEEEEEEEEEEEEEEEE", "รายการ");
+reset();
+const d1 = await buildDashboard(U6);
+assert.equal(d1.ok, true, `ต้องสร้างสำเร็จ (${d1.error})`);
+assert.equal(d1.tab, "สรุป");
+assert.ok(find((c) => c.body?.requests?.[0]?.addSheet).length === 1, "ต้องสร้างแท็บใหม่ 1 ครั้ง");
+const written = find((c) => c.method === "PUT" && c.url.includes("/values/"))[0];
+assert.ok(written, "ต้องเขียนสูตรลงแท็บ");
+assert.match(decodeURIComponent(written.url), /'สรุป'!A1/, "ต้องเขียนเริ่มที่ A1 ของแท็บสรุป");
+assert.ok(written.url.includes("USER_ENTERED"), "ต้องส่งแบบ USER_ENTERED ไม่งั้นสูตรกลายเป็นข้อความ");
+ok("สร้างแท็บสรุป: addSheet แล้วเขียนสูตรลง A1 แบบ USER_ENTERED");
+
+// รีเฟรชซ้ำ: ต้องล้างของเดิมก่อน ไม่ใช่สร้างแท็บซ้อน
+sheetTabs = [{ title: "รายการ", sheetId: 0 }, { title: "สรุป", sheetId: 1 }];
+reset();
+const d2 = await buildDashboard(U6);
+assert.equal(d2.ok, true);
+assert.equal(find((c) => c.body?.requests?.[0]?.addSheet).length, 0, "มีแท็บอยู่แล้วห้ามสร้างซ้ำ");
+assert.ok(find((c) => c.url.includes(":clear")).length === 1,
+  "ต้องล้างก่อนเขียน ไม่งั้นตาราง QUERY ที่เคยยาวกว่าจะเหลือเศษค้าง");
+ok("รีเฟรชแดชบอร์ด: ล้างของเดิมแล้วเขียนทับ ไม่สร้างแท็บซ้อน");
 
 console.log(`\nsheets.test: ${pass}/${pass} ผ่าน ✅`);

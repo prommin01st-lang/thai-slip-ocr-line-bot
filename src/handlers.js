@@ -19,7 +19,8 @@ import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          shiftMonth, sheetGuideMessage } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseSheetId } from "./sheets.js";
-import { syncNow } from "./sheetSync.js";
+import { syncNow, buildDashboard } from "./sheetSync.js";
+import { DASHBOARD_TAB } from "./dashboard.js";
 import { parseBill, MAX_ROWS } from "./billText.js";
 import * as pending from "./pending.js";
 import { parseEntries } from "./nlu.js";
@@ -185,6 +186,7 @@ const sheetStatusCard = (userId) => {
         data: "act=sheetsync", primary: waiting > 0 },
       { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${link.spreadsheet_id}/edit`,
         primary: !waiting },
+      { label: `📊 สร้าง/รีเฟรชแท็บ “${DASHBOARD_TAB}”`, data: "act=sheetdash" },
       { label: auto ? "⏸ ปิดอัปเดตอัตโนมัติ" : "▶️ เปิดอัปเดตอัตโนมัติ", data: "act=sheetauto" },
       { label: "🔌 เลิกเชื่อมชีต", data: "act=sheetoff" },
     ],
@@ -1090,8 +1092,37 @@ async function handlePostback(event) {
   if (act === "settings") return respond(event, settingsCard(userId));
 
   // --- Google Sheet ---
-  if (act === "sheet" || act === "sheetsync" || act === "sheetoff" || act === "sheetauto") {
+  if (act === "sheet" || act === "sheetsync" || act === "sheetoff" || act === "sheetauto"
+      || act === "sheetdash") {
     if (!config.sheetsEnabled) return;      // ปิดอยู่ = ทำเหมือนไม่มีปุ่มนี้ (ปุ่มเก่าในแชทยังกดได้)
+    if (act === "sheetdash") {
+      const link = L.sheetLink(userId);
+      if (!link) return respond(event, sheetHelpCards());
+      await showLoading(userId, 15);
+      const r = await buildDashboard(userId);
+      return respond(event, r.error
+        ? card({
+            title: "สร้างแดชบอร์ดไม่สำเร็จ", emoji: "⚠️", tone: "warn",
+            text: "ถ้าเพิ่งแชร์สิทธิ์ ลองกดใหม่อีกครั้งได้ครับ",
+            notes: [r.error],
+            actions: [{ label: "🔄 ลองใหม่", data: "act=sheetdash", primary: true },
+                      { label: "📗 สถานะชีต", data: "act=sheet" }],
+          })
+        : card({
+            title: `สร้างแท็บ “${r.tab}” แล้ว`, emoji: "📊", tone: "success",
+            rows: [{ label: "แท็บข้อมูล", value: r.dataTab },
+                   { label: "แท็บสรุป", value: r.tab }],
+            text: "เป็นสูตรทั้งหมด — เปิดดูเมื่อไหร่ก็คำนวณใหม่ให้เอง\n"
+                + "มีสรุปเดือนนี้ ยอดสะสม แนวโน้ม 12 เดือน กราฟ และรายจ่ายแยกตามหมวด",
+            notes: ["ห้ามแก้เซลล์ในแท็บสรุป — กดปุ่มนี้ซ้ำจะเขียนทับทั้งแท็บ"],
+            actions: [
+              { label: "📄 เปิดชีต",
+                url: `https://docs.google.com/spreadsheets/d/${link.spreadsheet_id}/edit`, primary: true },
+              { label: "📗 สถานะชีต", data: "act=sheet" },
+            ],
+            altText: `สร้างแท็บสรุปในชีตแล้ว`,
+          }));
+    }
     if (act === "sheetauto") {
       if (!L.sheetLink(userId)) return respond(event, sheetHelpCards());
       const on = !L.sheetAuto(userId);
@@ -1675,19 +1706,27 @@ async function handleText(event) {
                     { label: "🔌 เลิกเชื่อม", data: "act=sheetoff" }],
         }), { type: "text", text: config.googleSaEmail }]);
       }
+      // สร้างแท็บสรุปให้เลยตั้งแต่ครั้งแรก — ผู้ใช้จะได้เห็นประโยชน์ทันทีโดยไม่ต้องรู้ว่า
+      // มีปุ่มนี้อยู่ ล้มเหลวก็ไม่เป็นไร การเชื่อมสำเร็จไปแล้ว กดสร้างทีหลังได้
+      const dash = await buildDashboard(userId);
       return respond(event, card({
         title: "เชื่อมชีตเรียบร้อย", emoji: "📗", tone: "success",
         rows: [
           { label: "คัดลอกขึ้นชีต", value: `${queued} รายการ` },
-          { label: "แท็บ", value: L.sheetLink(userId)?.tab ?? "-" },
+          { label: "แท็บข้อมูล", value: L.sheetLink(userId)?.tab ?? "-" },
+          { label: "แท็บสรุป", value: dash.ok ? dash.tab : "สร้างไม่สำเร็จ (กดสร้างใหม่ได้)" },
         ],
         // ต้องบอกให้ชัดว่าเป็นโหมดกดเอง ไม่งั้นผู้ใช้จะรอชีตอัปเดตเองแล้วคิดว่าระบบพัง
         text: "ของเก่าเติมให้แล้ว ส่วนรายการใหม่จะถูกเก็บไว้ก่อน\nแล้วส่งขึ้นชีตทีเดียวตอนคุณกดปุ่ม “ส่งขึ้นชีตเลย”",
-        notes: ["อยากให้ขึ้นเองทุกครั้ง เปิดอัปเดตอัตโนมัติได้ในหน้าสถานะชีต",
-                "ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ",
-                "ลบข้อมูลของฉัน = ล้างข้อมูลบนชีตให้ด้วย"],
+        notes: [
+          ...(dash.ok ? [`แท็บ “${dash.tab}” สรุปยอด/กราฟให้อัตโนมัติ ไม่ต้องแก้อะไร`] : []),
+          "อยากให้ขึ้นเองทุกครั้ง เปิดอัปเดตอัตโนมัติได้ในหน้าสถานะชีต",
+          "ชีตเป็นสำเนาทางเดียว — แก้ตัวเลขในชีตแล้วจะถูกเขียนทับ",
+          "ลบข้อมูลของฉัน = ล้างข้อมูลบนชีตให้ด้วย",
+        ],
         actions: [
           { label: "📄 เปิดชีต", url: `https://docs.google.com/spreadsheets/d/${sid}/edit`, primary: true },
+          ...(dash.ok ? [] : [{ label: "📊 ลองสร้างแท็บสรุปอีกครั้ง", data: "act=sheetdash" }]),
           { label: "📗 สถานะชีต", data: "act=sheet" },
         ],
         altText: `เชื่อม Google Sheet แล้ว — คัดลอก ${queued} รายการ`,

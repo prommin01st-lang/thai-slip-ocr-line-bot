@@ -125,12 +125,38 @@ async function api(method, path, body = null) {
 
 // ---------- สิ่งที่ sheetSync ใช้ ----------
 
+/** แท็บทั้งหมดในชีต `[{title, sheetId}]` */
+export async function tabs(spreadsheetId) {
+  const d = await api("GET", `/${spreadsheetId}?fields=sheets.properties(title,sheetId)`);
+  const list = (d.sheets ?? []).map((s) => s.properties).filter((p) => p?.title);
+  if (!list.length) throw new SheetError("ชีตนี้ไม่มีแท็บเลย", { permanent: true });
+  return list;
+}
+
 /** ชื่อแท็บแรกของชีต — ใช้แท็บที่มีอยู่แล้ว จะได้ไม่ต้องขอสิทธิ์สร้างแท็บใหม่ */
 export async function firstTab(spreadsheetId) {
-  const d = await api("GET", `/${spreadsheetId}?fields=sheets.properties.title`);
-  const title = d.sheets?.[0]?.properties?.title;
-  if (!title) throw new SheetError("ชีตนี้ไม่มีแท็บเลย", { permanent: true });
-  return title;
+  return (await tabs(spreadsheetId))[0].title;
+}
+
+/** สร้างแท็บใหม่ — คืน sheetId (ต้องใช้ spreadsheets.batchUpdate ไม่ใช่ values API) */
+export async function addTab(spreadsheetId, title) {
+  const d = await api("POST", `/${spreadsheetId}:batchUpdate`, {
+    requests: [{ addSheet: { properties: { title } } }],
+  });
+  return d.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+}
+
+/** เขียนทับช่วงที่ระบุด้วยตาราง 2 มิติ (ใช้กับแดชบอร์ดซึ่งเป็นสูตรล้วน) */
+export function writeRange(spreadsheetId, tab, a1, rows) {
+  return api(
+    "PUT",
+    `/${spreadsheetId}/values/${encodeURIComponent(rangeOf(tab, a1))}?valueInputOption=USER_ENTERED`,
+    { values: rows });
+}
+
+/** ล้างช่วงที่ระบุ */
+export function clearRange(spreadsheetId, tab, a1) {
+  return api("POST", `/${spreadsheetId}/values/${encodeURIComponent(rangeOf(tab, a1))}:clear`, {});
 }
 
 /**

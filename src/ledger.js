@@ -806,11 +806,42 @@ export function exportCsv(userId) {
 // ทุกฟังก์ชันในหมวดนี้เป็น sync ล้วนเหมือนที่เหลือทั้งไฟล์ — แค่ **จดใบสั่ง** ลงตาราง
 // การยิง HTTP จริงอยู่ใน sheetSync.js ซึ่งวิ่งเป็น worker แยก (ดูเหตุผลใน migration 7)
 
-/** หัวตารางของชีต = คอลัมน์ชุดเดียวกับ CSV เป๊ะ ๆ (นิยามที่เดียวจะได้ไม่หลุดจากกัน) */
-export const SHEET_HEADERS = CSV_COLS.map(([h]) => h);
+/**
+ * หัวตารางของชีต = คอลัมน์ชุดเดียวกับ CSV **บวกคอลัมน์ "เดือน"**
+ *
+ * คอลัมน์เดือนมีไว้ให้แดชบอร์ดใช้กรองอย่างเดียว — จำเป็นเพราะสูตรใน Sheets
+ * ต้องรู้แน่ว่าคอลัมน์วันที่เป็นชนิดอะไร ถ้า Sheets ตีความ `2026-01-25 14:32`
+ * เป็น datetime สูตรแบบข้อความจะพัง ถ้าตีเป็นข้อความสูตรแบบวันที่ก็พัง
+ * เก็บ `YYYY-MM` แยกไว้ต่างหากเลยจบปัญหา ไม่ต้องเดาว่า Sheets จะตีความยังไง
+ */
+export const SHEET_HEADERS = [...CSV_COLS.map(([h]) => h), "เดือน"];
 
-/** ธุรกรรมหนึ่งแถว → array ตามลำดับ SHEET_HEADERS */
-export const sheetValues = (t) => CSV_COLS.map(([, f]) => f(t));
+/**
+ * ธุรกรรมหนึ่งแถว → array ตามลำดับ SHEET_HEADERS
+ *
+ * ค่าเดือนขึ้นต้นด้วย `'` เพื่อ**บังคับให้ Sheets เก็บเป็นข้อความ** — ไม่ใส่แล้ว
+ * `2026-01` จะถูกตีความเป็นวันที่ 1 ม.ค. 2026 แล้วสูตรที่เทียบข้อความจะไม่เจอสักแถว
+ */
+export const sheetValues = (t) => [
+  ...CSV_COLS.map(([, f]) => f(t)),
+  `'${sheetMonth(t)}`,
+];
+
+/**
+ * เดือนของรายการ `'YYYY-MM'` — **ต้องตรงกับ `DATE_OF` ที่ SQL ใช้เป๊ะ ๆ**
+ *
+ * ไม่งั้นยอดในแดชบอร์ดจะไม่ตรงกับยอดในการ์ด "สรุป" ของบอทเอง ซึ่งเป็นความไม่ตรงกัน
+ * ที่ผู้ใช้เห็นทันทีและหาสาเหตุเองไม่ได้เลย
+ * `created_at` เก็บเป็น UTC จึงต้อง +7 ชม. ก่อนตัดเดือน เหมือนที่ SQL ทำ
+ */
+export function sheetMonth(t) {
+  if (t.occurred_at) return String(t.occurred_at).slice(0, 7);
+  if (!t.created_at) return "";
+  const d = new Date(t.created_at);
+  if (Number.isNaN(d.getTime())) return "";
+  d.setUTCHours(d.getUTCHours() + 7);
+  return d.toISOString().slice(0, 7);
+}
 
 /** ธุรกรรม + ฟิลด์จากสลิป (ref/bank) — รวม rejected ด้วย เพราะชีตต้องรู้ว่าถูกลบ */
 export function txnForSheet(userId, txnId) {
