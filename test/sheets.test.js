@@ -8,7 +8,7 @@ import { open } from "../src/db.js";
 import * as L from "../src/ledger.js";
 import * as S from "../src/sheets.js";
 import { syncUser, syncNow, tick, buildDashboard, _reset as resetSync } from "../src/sheetSync.js";
-import { dashboardValues } from "../src/dashboard.js";
+import { dashboardValues, dashboardLayout, chartRequests } from "../src/dashboard.js";
 
 L.setDb(open(":memory:"));
 S._setToken("fake-token-for-test");
@@ -37,8 +37,13 @@ globalThis.fetch = async (url, opts = {}) => {
   calls.push({ url: u, method, body: opts.body ? JSON.parse(opts.body) : null });
 
   if (failWith) return jsonRes({ error: { message: failWith.message } }, failWith.status);
-  if (u.includes("fields=sheets.properties")) {
-    return jsonRes({ sheets: sheetTabs.map((p) => ({ properties: p })) });
+  if (u.includes("fields=sheets")) {
+    return jsonRes({
+      sheets: sheetTabs.map((p) => ({
+        properties: { title: p.title, sheetId: p.sheetId },
+        charts: (p.chartIds ?? []).map((id) => ({ chartId: id })),
+      })),
+    });
   }
   // spreadsheets:batchUpdate (สร้างแท็บ) — คนละเส้นกับ values:batchUpdate
   if (u.endsWith(":batchUpdate") && !u.includes("/values")) {
@@ -366,14 +371,41 @@ assert.match(decodeURIComponent(written.url), /'สรุป'!A1/, "ต้อง
 assert.ok(written.url.includes("USER_ENTERED"), "ต้องส่งแบบ USER_ENTERED ไม่งั้นสูตรกลายเป็นข้อความ");
 ok("สร้างแท็บสรุป: addSheet แล้วเขียนสูตรลง A1 แบบ USER_ENTERED");
 
-// รีเฟรชซ้ำ: ต้องล้างของเดิมก่อน ไม่ใช่สร้างแท็บซ้อน
-sheetTabs = [{ title: "รายการ", sheetId: 0 }, { title: "สรุป", sheetId: 1 }];
+// กราฟจริงต้องถูกสร้างพร้อมกัน
+const charted = find((c) => c.body?.requests?.some?.((r) => r.addChart))[0];
+assert.ok(charted, "ต้องสร้างกราฟในแท็บสรุป");
+const kinds = charted.body.requests.filter((r) => r.addChart)
+  .map((r) => Object.keys(r.addChart.chart.spec).find((k) => k.endsWith("Chart")));
+assert.deepEqual(kinds, ["basicChart", "pieChart"], "ต้องมีกราฟคอลัมน์และกราฟวงกลม");
+ok("สร้างกราฟจริงในแท็บสรุป (คอลัมน์ 12 เดือน + วงกลมตามหมวด)");
+
+// รีเฟรชซ้ำ: ต้องล้างของเดิมและ **ลบกราฟเก่า** ไม่ใช่สร้างทับซ้อนกัน
+sheetTabs = [{ title: "รายการ", sheetId: 0 },
+             { title: "สรุป", sheetId: 1, chartIds: [11, 12] }];
 reset();
 const d2 = await buildDashboard(U6);
 assert.equal(d2.ok, true);
 assert.equal(find((c) => c.body?.requests?.[0]?.addSheet).length, 0, "มีแท็บอยู่แล้วห้ามสร้างซ้ำ");
 assert.ok(find((c) => c.url.includes(":clear")).length === 1,
   "ต้องล้างก่อนเขียน ไม่งั้นตาราง QUERY ที่เคยยาวกว่าจะเหลือเศษค้าง");
-ok("รีเฟรชแดชบอร์ด: ล้างของเดิมแล้วเขียนทับ ไม่สร้างแท็บซ้อน");
+const refresh = find((c) => c.body?.requests?.some?.((r) => r.addChart))[0];
+const deleted = refresh.body.requests.filter((r) => r.deleteEmbeddedObject).map((r) => r.deleteEmbeddedObject.objectId);
+assert.deepEqual(deleted, [11, 12],
+  "ต้องลบกราฟเก่าก่อน — `clear` ลบแค่เซลล์ ไม่แตะกราฟที่ฝังอยู่ กดรีเฟรชสิบครั้งจะได้กราฟยี่สิบอัน");
+assert.ok(refresh.body.requests.indexOf(refresh.body.requests.find((r) => r.deleteEmbeddedObject))
+  < refresh.body.requests.indexOf(refresh.body.requests.find((r) => r.addChart)),
+  "คำสั่งลบต้องมาก่อนคำสั่งสร้างในชุดเดียวกัน");
+ok("รีเฟรชแดชบอร์ด: ล้างเซลล์ + ลบกราฟเก่า แล้วสร้างใหม่ ไม่ซ้อนกัน");
+
+// ช่วงข้อมูลของกราฟต้องตรงกับตำแหน่งจริงในหน้า (0-based, end ไม่รวม)
+const layout = dashboardLayout("รายการ");
+const [colChart, pieChart] = chartRequests(1, layout);
+const dom = colChart.addChart.chart.spec.basicChart.domains[0].domain.sourceRange.sources[0];
+assert.equal(dom.startRowIndex, layout.trendHeader - 1, "กราฟต้องเริ่มที่หัวตาราง (ใช้เป็นชื่อชุดข้อมูล)");
+assert.equal(dom.endRowIndex, layout.trendEnd, "ต้องจบที่แถวสุดท้ายของ 12 เดือน");
+assert.equal(dom.endRowIndex - dom.startRowIndex, 13, "หัวตาราง 1 + ข้อมูล 12 เดือน");
+const pieDom = pieChart.addChart.chart.spec.pieChart.domain.sourceRange.sources[0];
+assert.equal(pieDom.startRowIndex, layout.queryRow, "วงกลมต้องเริ่มถัดจากหัวผลลัพธ์ QUERY ไม่ใช่ทับหัว");
+ok("ช่วงข้อมูลของกราฟตรงกับตำแหน่งจริง (แปลง 1-based → 0-based ถูก)");
 
 console.log(`\nsheets.test: ${pass}/${pass} ผ่าน ✅`);

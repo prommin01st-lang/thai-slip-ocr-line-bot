@@ -138,6 +138,27 @@ export async function firstTab(spreadsheetId) {
   return (await tabs(spreadsheetId))[0].title;
 }
 
+/**
+ * แท็บ + กราฟที่ฝังอยู่ `[{title, sheetId, chartIds}]`
+ *
+ * ต้องรู้ chartId เพื่อลบกราฟเก่าก่อนสร้างใหม่ ไม่งั้นกดรีเฟรชกี่ครั้งก็ได้กราฟซ้อนกัน
+ * เท่านั้นครั้ง จนแท็บเต็มไปด้วยกราฟที่เหมือนกันหมด
+ */
+export async function tabsWithCharts(spreadsheetId) {
+  const d = await api("GET",
+    `/${spreadsheetId}?fields=sheets(properties(title,sheetId),charts.chartId)`);
+  return (d.sheets ?? []).map((s) => ({
+    ...s.properties,
+    chartIds: (s.charts ?? []).map((c) => c.chartId).filter((id) => id != null),
+  }));
+}
+
+/** ยิงคำขอชุดหนึ่งไปที่ spreadsheets.batchUpdate (สร้าง/ลบกราฟ, สร้างแท็บ ฯลฯ) */
+export function batchUpdate(spreadsheetId, requests) {
+  if (!requests.length) return Promise.resolve({});
+  return api("POST", `/${spreadsheetId}:batchUpdate`, { requests });
+}
+
 /** สร้างแท็บใหม่ — คืน sheetId (ต้องใช้ spreadsheets.batchUpdate ไม่ใช่ values API) */
 export async function addTab(spreadsheetId, title) {
   const d = await api("POST", `/${spreadsheetId}:batchUpdate`, {

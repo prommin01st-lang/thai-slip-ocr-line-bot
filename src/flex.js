@@ -536,6 +536,29 @@ function sumRow(label, value, color = "#333333", bold = false) {
 }
 
 /** สรุปรายรับ-รายจ่าย → Flex bubble (อ่านง่ายกว่าข้อความเปล่ามาก) */
+/**
+ * แท่งสัดส่วน — ทำจาก box สองชั้น ไม่ใช่รูป
+ *
+ * Flex กำหนด `width` เป็นเปอร์เซ็นต์ได้ จึงวาดกราฟแท่งได้โดย**ไม่ต้องมีรูปเลย**
+ * ไม่ต้องมี URL สาธารณะ ไม่ต้องมีไลบรารีวาดภาพ ไม่ต้องเรียก API ที่ไหน
+ * และไม่ส่งตัวเลขการเงินออกนอกระบบ (ต่างจากบริการสร้างกราฟเป็นรูปที่ต้องยิงข้อมูลไปให้)
+ *
+ * ชั้นในต้องมี `filler` เพราะ Flex ไม่ยอมรับ box ที่ `contents` ว่าง
+ * และต้องมีความกว้างขั้นต่ำ ไม่งั้นหมวดที่ยอดน้อยมากจะหายไปเลยจนดูเหมือนไม่มีข้อมูล
+ */
+export function bar(pct, color = "#A63D3D", height = "6px") {
+  const w = Math.max(3, Math.min(100, Math.round(Number(pct) || 0)));
+  return {
+    type: "box", layout: "vertical", height, backgroundColor: "#EFEBE5",
+    cornerRadius: "3px", margin: "xs",
+    contents: [{
+      type: "box", layout: "vertical", width: `${w}%`, height,
+      backgroundColor: color, cornerRadius: "3px",
+      contents: [{ type: "filler" }],
+    }],
+  };
+}
+
 export function summaryBubble(s, fromCents) {
   const body = [
     { type: "text", text: "รายรับ-รายจ่าย", size: "xs", color: "#8A8A8A" },
@@ -553,11 +576,21 @@ export function summaryBubble(s, fromCents) {
   ];
 
   if (s.top_categories?.length) {
+    // เทียบสัดส่วนกับ**หมวดที่ใช้มากสุด** ไม่ใช่กับยอดรวมรายจ่าย
+    // เพราะการ์ดโชว์แค่ 3 อันดับแรก ถ้าหารด้วยยอดรวมแท่งจะสั้นจู๋ทุกอันเมื่อมีหมวดเยอะ
+    // แล้วมองไม่ออกว่าอันไหนมากกว่ากัน ซึ่งเป็นเรื่องเดียวที่แท่งควรบอก
+    const top = Math.max(...s.top_categories.map((c) => c.cents ?? 0), 1);
     body.push({ type: "separator", margin: "lg" });
     body.push({ type: "text", text: "ใช้มากสุด", size: "xxs", color: "#8A8A8A", margin: "lg" });
     body.push({
-      type: "box", layout: "vertical", margin: "sm", spacing: "xs",
-      contents: s.top_categories.map((c) => sumRow(c.category, `${c.amount} ฿`)),
+      type: "box", layout: "vertical", margin: "sm", spacing: "sm",
+      contents: s.top_categories.map((c) => ({
+        type: "box", layout: "vertical", spacing: "xs",
+        contents: [
+          sumRow(c.category, `${c.amount} ฿`),
+          bar(((c.cents ?? 0) / top) * 100),
+        ],
+      })),
     });
   }
 
@@ -700,6 +733,9 @@ export function categoryPickerBubble(rows, fromCents) {
             text: `${fromCents(r.cents)} ฿` },
         ],
       },
+      // หน้านี้โชว์ทุกหมวด จึงเทียบกับ**ยอดรวม**ได้ตรง ๆ — % ที่เขียนข้างแท่งกับ
+      // ความยาวแท่งเป็นตัวเลขเดียวกัน ไม่ใช่คนละมาตราส่วนให้สับสน
+      bar(total ? (r.cents / total) * 100 : 0),
       {
         type: "box", layout: "baseline", contents: [
           { type: "text", flex: 5, size: "xxs", color: "#B0B0B0", text: `${r.n} รายการ` },

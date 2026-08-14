@@ -43,7 +43,7 @@ const sumOf = (t, dir, month) =>
  *
  * `dataTab` = ชื่อแท็บที่เก็บรายการจริง ต้องส่งมาเพราะผู้ใช้ตั้งชื่อเองได้
  */
-export function dashboardRows(dataTab) {
+export function dashboardLayout(dataTab) {
   const t = dataTab;
   const rows = [];
   // คืนเลขแถว (1-indexed) ของสิ่งที่เพิ่ง push — **ห้าม hardcode เลขแถวเด็ดขาด**
@@ -85,6 +85,7 @@ export function dashboardRows(dataTab) {
   // --- แนวโน้ม 12 เดือน + กราฟแท่งในเซลล์ ---
   push("แนวโน้ม 12 เดือนล่าสุด");
   push("เดือน", "รายรับ", "รายจ่าย", "คงเหลือ");
+  const trendHeader = rows.length;               // แถวหัวตาราง (กราฟใช้เป็นชื่อชุดข้อมูล)
   const trendStart = rows.length + 1;            // ข้อมูลเริ่มแถวถัดจากหัวตาราง
   for (let i = MONTHS - 1; i >= 0; i--) {
     const m = `TEXT(EOMONTH(TODAY(),-${i}),"yyyy-mm")`;
@@ -110,9 +111,13 @@ export function dashboardRows(dataTab) {
     `where ${COL.direction}='รายจ่าย' and ${COL.status}<>'ลบแล้ว' and ${COL.month}=date_month ` +
     `group by ${COL.category} order by sum(${COL.amount}) desc ` +
     `label sum(${COL.amount}) 'ยอดรวม', count(${COL.amount}) 'จำนวน'",1),"ยังไม่มีรายจ่ายเดือนนี้")`);
+  const queryRow = rows.length;                  // แถวหัวของผลลัพธ์ QUERY (ข้อมูลอยู่ถัดลงไป)
 
-  return rows;
+  return { rows, trendHeader, trendStart, trendEnd, queryRow };
 }
+
+/** เข้ากันได้กับผู้เรียกที่ต้องการแค่แถว */
+export const dashboardRows = (dataTab) => dashboardLayout(dataTab).rows;
 
 /**
  * ประกอบสูตร QUERY ที่ต้องแทรกค่าเดือนปัจจุบัน
@@ -126,6 +131,84 @@ function withMonth(formula) {
 
 /** แถวสุดท้ายที่พร้อมเขียนลงชีต (แทนค่าเดือนใน QUERY เรียบร้อยแล้ว) */
 export function dashboardValues(dataTab) {
-  return dashboardRows(dataTab).map((row) =>
+  return dashboardLayout(dataTab).rows.map((row) =>
     row.map((cell) => (typeof cell === "string" ? withMonth(cell) : cell)));
+}
+
+// ---------- กราฟจริง (ฝังเป็น object ในแท็บ ไม่ใช่สูตร) ----------
+
+/** #RRGGBB → {red,green,blue} 0–1 ตามที่ Sheets API ต้องการ */
+const rgb = (hex) => ({
+  red: parseInt(hex.slice(1, 3), 16) / 255,
+  green: parseInt(hex.slice(3, 5), 16) / 255,
+  blue: parseInt(hex.slice(5, 7), 16) / 255,
+});
+
+/** เผื่อจำนวนหมวดสูงสุดที่กราฟวงกลมครอบ — QUERY ขยายเองจึงไม่รู้ขอบเขตล่วงหน้า */
+const PIE_ROWS = 20;
+
+/**
+ * คำขอสร้างกราฟในแท็บสรุป
+ *
+ * ⚠️ index ของ Sheets API เป็น **0-based และ end ไม่รวม** ส่วนเลขแถวใน layout
+ * เป็น 1-based แบบที่คนอ่านสูตรเข้าใจ — แปลงผิดตรงนี้กราฟจะเลื่อนไปหนึ่งแถว
+ * แล้วเอาหัวตารางไปเป็นข้อมูล (ได้กราฟที่ดูเหมือนถูกแต่ผิด)
+ */
+export function chartRequests(sheetId, layout) {
+  const src = (rowFrom, rowTo, colFrom, colTo) => ({
+    sources: [{
+      sheetId,
+      startRowIndex: rowFrom - 1, endRowIndex: rowTo,
+      startColumnIndex: colFrom, endColumnIndex: colTo,
+    }],
+  });
+  const at = (rowIndex, columnIndex, widthPixels, heightPixels) => ({
+    overlayPosition: { anchorCell: { sheetId, rowIndex, columnIndex }, widthPixels, heightPixels },
+  });
+
+  return [
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: "รายรับ-รายจ่าย 12 เดือน",
+            basicChart: {
+              chartType: "COLUMN",
+              legendPosition: "BOTTOM_LEGEND",
+              // นับหัวตารางเป็นชื่อชุดข้อมูล → legend ขึ้นว่า "รายรับ"/"รายจ่าย" ไม่ใช่ Series 1/2
+              headerCount: 1,
+              axis: [{ position: "BOTTOM_AXIS" }, { position: "LEFT_AXIS", title: "บาท" }],
+              domains: [{ domain: { sourceRange: src(layout.trendHeader, layout.trendEnd, 0, 1) } }],
+              series: [
+                { series: { sourceRange: src(layout.trendHeader, layout.trendEnd, 1, 2) },
+                  targetAxis: "LEFT_AXIS", color: rgb("#2E7D5B") },
+                { series: { sourceRange: src(layout.trendHeader, layout.trendEnd, 2, 3) },
+                  targetAxis: "LEFT_AXIS", color: rgb("#A63D3D") },
+              ],
+            },
+          },
+          // วางไว้คอลัมน์ F เป็นต้นไป — พ้นข้อมูลที่ใช้ A–D ไม่บังอะไร
+          position: at(3, 5, 620, 320),
+        },
+      },
+    },
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: "รายจ่ายตามหมวด (เดือนนี้)",
+            pieChart: {
+              legendPosition: "RIGHT_LEGEND",
+              pieHole: 0.4,
+              // เริ่มจากแถวถัดจากหัวผลลัพธ์ QUERY และเผื่อพื้นที่ไว้ล่วงหน้า
+              // แถวว่างที่เกินมาไม่ถูกวาด Sheets ข้ามให้เอง
+              domain: { sourceRange: src(layout.queryRow + 1, layout.queryRow + PIE_ROWS, 0, 1) },
+              series: { sourceRange: src(layout.queryRow + 1, layout.queryRow + PIE_ROWS, 1, 2) },
+            },
+          },
+          position: at(21, 5, 620, 340),
+        },
+      },
+    },
+  ];
 }

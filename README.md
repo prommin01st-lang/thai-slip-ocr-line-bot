@@ -61,6 +61,9 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
   is one tap to change from the transaction list — corrections are remembered
 - The transaction list filters by income/expense, by category, or by "not yet
   categorised", and says how many rows it is hiding rather than silently truncating
+- **Bar charts inside the chat cards** — drawn with percentage-width Flex boxes rather
+  than images, so there is no drawing library, no API call, and no financial figure
+  ever leaves the system to be rendered elsewhere
 - **Send many slips at once** — they are grouped into one batch and answered with a
   single summary card (how many saved, duplicated, or rejected and why), which also
   keeps a multi-slip upload from burning the 300/month push quota
@@ -93,8 +96,9 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
   every call.) Hundreds of rows still cost **3 requests** — read the id column, write
   updates, append new ones
 - A **“สรุป” dashboard tab built entirely from formulas** — this month's totals, running
-  totals, a 12-month trend with sparkline charts, and spend by category. Written once,
-  then the spreadsheet recalculates it forever at **zero further API cost**
+  totals, a 12-month trend and spend by category, **plus real embedded charts** (a
+  12-month column chart and a category pie). Written once, then the spreadsheet
+  recalculates it forever at **zero further API cost**
 - Hitting the quota (429) is treated as temporary — exponential backoff, not a permanent give-up
 - **SQLite stays the source of truth; the sheet is a one-way copy** — dedup, PDPA cascade
   deletes and integer-satang money all live in DB constraints that Sheets cannot express
@@ -187,7 +191,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 190 tests.
+(`ocr/`), covered by 192 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -220,7 +224,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           190 tests, no network or GPU required — `npm test`
+test/           192 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
 assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
@@ -233,7 +237,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 190 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 192 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real

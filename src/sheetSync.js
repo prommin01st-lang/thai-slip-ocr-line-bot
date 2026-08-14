@@ -5,7 +5,7 @@
 import { config } from "./config.js";
 import * as L from "./ledger.js";
 import * as S from "./sheets.js";
-import { DASHBOARD_TAB, dashboardValues } from "./dashboard.js";
+import { DASHBOARD_TAB, dashboardValues, dashboardLayout, chartRequests } from "./dashboard.js";
 
 /**
  * ล้มเหลวกี่ครั้งถึงเลิกลอง
@@ -130,7 +130,7 @@ export async function buildDashboard(userId) {
   const link = L.sheetLink(userId);
   if (!link) return { error: "ยังไม่ได้เชื่อมชีต" };
   try {
-    const list = await S.tabs(link.spreadsheet_id);
+    const list = await S.tabsWithCharts(link.spreadsheet_id);
     // แท็บข้อมูลคือแท็บแรกเสมอ (ตอนเชื่อมเราใช้แท็บแรก) — แต่ถ้าผู้ใช้เปลี่ยนชื่อ
     // ไปแล้วต้องยึดตามที่บันทึกไว้ ไม่งั้นสูตรจะชี้ไปแท็บที่ไม่มีข้อมูล
     const dataTab = link.tab || list[0].title;
@@ -138,15 +138,31 @@ export async function buildDashboard(userId) {
       return { error: `แท็บข้อมูลชื่อ “${DASHBOARD_TAB}” อยู่แล้ว — เปลี่ยนชื่อแท็บข้อมูลก่อน` };
     }
 
-    if (list.some((p) => p.title === DASHBOARD_TAB)) {
+    let dash = list.find((p) => p.title === DASHBOARD_TAB);
+    if (dash) {
       // รีเฟรช: ล้างของเดิมก่อน ไม่งั้นตาราง QUERY ที่เคยยาวกว่าจะเหลือเศษค้าง
       await S.clearRange(link.spreadsheet_id, DASHBOARD_TAB, "A1:Z");
     } else {
-      await S.addTab(link.spreadsheet_id, DASHBOARD_TAB);
+      const sheetId = await S.addTab(link.spreadsheet_id, DASHBOARD_TAB);
+      dash = { sheetId, chartIds: [] };
     }
     await S.writeRange(link.spreadsheet_id, DASHBOARD_TAB, "A1", dashboardValues(dataTab));
+
+    // กราฟฝังเป็น object แยกจากเซลล์ — `clear` ไม่ได้ลบให้ ต้องลบเองก่อนสร้างใหม่
+    // ไม่งั้นกดรีเฟรชสิบครั้งได้กราฟยี่สิบอันซ้อนกัน
+    let charts = 0;
+    if (dash.sheetId != null) {
+      const layout = dashboardLayout(dataTab);
+      const reqs = [
+        ...(dash.chartIds ?? []).map((id) => ({ deleteEmbeddedObject: { objectId: id } })),
+        ...chartRequests(dash.sheetId, layout),
+      ];
+      await S.batchUpdate(link.spreadsheet_id, reqs);
+      charts = reqs.length - (dash.chartIds?.length ?? 0);
+    }
+
     L.markSheetSync(userId, null);
-    return { ok: true, tab: DASHBOARD_TAB, dataTab };
+    return { ok: true, tab: DASHBOARD_TAB, dataTab, charts };
   } catch (err) {
     L.markSheetSync(userId, err.message);
     console.warn(`[แดชบอร์ดล้มเหลว] ${userId.slice(-8)}: ${err.message}`);
