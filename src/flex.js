@@ -434,7 +434,7 @@ export function sheetGuideMessage({ mascotUrl = null, email = null } = {}) {
   const body = {
     type: "box", layout: "vertical", paddingAll: "lg",
     contents: [
-      sheetStep(1, "สร้าง Google Sheet เปล่าไว้ 1 ไฟล์ (กดปุ่มข้างล่างได้เลย)"),
+      sheetStep(1, "กดปุ่มข้างล่างสร้างชีตเปล่าใหม่\n(ถ้าเด้งไป Drive แปลว่ายังไม่ได้ลงแอป Sheets — กด “+” แล้วเลือก Google Sheets ได้เลย)"),
       sheetStep(2, "ในชีตกด “แชร์” → วางอีเมลที่ผมส่งให้ในข้อความถัดไป → เลือกสิทธิ์ “ผู้แก้ไข”"),
       sheetStep(3, "ก๊อปลิงก์ชีตจากแถบที่อยู่ แล้วส่งกลับมาที่แชทนี้"),
       { type: "separator", margin: "xl" },
@@ -458,8 +458,11 @@ export function sheetGuideMessage({ mascotUrl = null, email = null } = {}) {
       footer: {
         type: "box", layout: "vertical", spacing: "sm", paddingAll: "md",
         contents: [
-          // sheets.new เปิดชีตเปล่าใหม่ทันทีในบัญชีที่ล็อกอินอยู่ — ตัดขั้นตอน
-          // "เข้า Drive แล้วหาปุ่มสร้าง" ซึ่งเป็นจุดที่คนไม่คุ้นเคยหลุดบ่อยที่สุด
+          // sheets.new สร้างชีตเปล่าใหม่ให้ทันที — ตัดขั้นตอน "หาปุ่มสร้าง" ทิ้งไปเลย
+          //
+          // ⚠️ ยกเว้นบนมือถือที่ **ยังไม่ได้ลงแอป Google Sheets** ซึ่งจะเด้งไป Drive แทน
+          // (เจอจริงตอนทดสอบ) ปลายทางนั้นก็ยังสร้างชีตได้ แค่ต้องกด "+" เอง
+          // จึงเขียนไว้ในขั้นที่ 1 แทนที่จะเปลี่ยนไปใช้ลิงก์ที่ช้ากว่าสำหรับทุกคน
           { type: "button", height: "sm", style: "primary", color: SHEET_PURPLE,
             action: { type: "uri", label: "📄 สร้างชีตใหม่เลย", uri: "https://sheets.new" } },
           txt(email ? "อีเมลสำหรับกด “แชร์” อยู่ในข้อความถัดไป (กดค้างเพื่อคัดลอก)"
