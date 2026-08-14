@@ -3,6 +3,15 @@ node_modules/
 logs/
 *.log
 
+# 🔒 คีย์ service account ของ Google — ไฟล์ที่โหลดจาก Cloud Console
+# ชื่อมาแบบ <project-id>-<keyid 12 หลัก>.json
+# **คีย์นี้ไม่มีวันหมดอายุเอง** หลุดเมื่อไหร่คือใครก็เขียนชีตของผู้ใช้ได้ตลอดไป
+# ที่ถูกคือเก็บไว้นอกโฟลเดอร์โปรเจกต์ บรรทัดพวกนี้เป็นแค่ตาข่ายกันพลาด
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+*service-account*.json
+*credential*.json
+*-key.json
+
 # bench — ของหนัก/ของที่สร้างใหม่ได้ ไม่ commit
 bench/llama/
 bench/llama.cpp/
