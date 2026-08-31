@@ -823,4 +823,72 @@ assert.ok(!JSON.stringify(noPic).includes('"type":"image"'),
 assert.ok(JSON.stringify(noPic).includes("แชร์"), "ขั้นตอนต้องยังอยู่ครบ");
 ok("ยังไม่ได้ตั้ง PUBLIC_URL → การ์ดยังใช้ได้ แค่ไม่มีรูป");
 
+// --- การ์ดหารบิล ---
+//
+// จุดที่พังเงียบได้: ปุ่มปรับจำนวนคนส่งข้อมูลกลับมาทาง postback ซึ่ง **จำกัด 300 ไบต์**
+// ชื่อรายการภาษาไทย encode แล้วตัวละ 9 ไบต์ ถ้าไม่ตัดให้สั้นจะทะลุแล้ว LINE ตอบ 400
+{
+  const msgs = H.splitMessages({
+    totalCents: 120000, people: 4, pct: 10, pctLabel: "เซอร์วิส",
+    tipCents: 0, roundUp: false, note: "ค่าข้าว",
+  });
+  assert.equal(msgs.length, 2, "ต้องได้การ์ด + ข้อความธรรมดาไว้คัดลอกส่งเข้ากลุ่ม");
+  validFlex(msgs[0].contents, "splitCard");
+  const j = JSON.stringify(msgs[0]);
+  assert.ok(j.includes("330.00"), "ยอดต่อคนหลังบวกเซอร์วิสต้องเป็น 330.00");
+  assert.ok(j.includes("1,320.00"), "ต้องโชว์ยอดรวมทั้งสิ้น ไม่ใช่แค่ยอดบิล");
+  assert.equal(msgs[1].type, "text", "ใบที่สองต้องเป็นข้อความธรรมดา (Flex คัดลอกไม่ได้)");
+  assert.ok(msgs[1].text.includes("คนละ 330.00"), "ข้อความคัดลอกต้องบอกยอดต่อคน");
+
+  // ทุกปุ่มที่ส่ง postback ต้องอ่านกลับมาได้ครบและไม่ยาวเกินที่ LINE ยอมรับ
+  let checked = 0;
+  for (const d of j.match(/"data":"[^"]+"/g) ?? []) {
+    const data = JSON.parse(`{${d}}`).data;
+    assert.ok(Buffer.byteLength(data) <= 300, `postback ยาวเกิน 300 ไบต์: ${data}`);
+    if (!data.startsWith("act=split")) continue;
+    const back = H.splitFromParams(new URLSearchParams(data));
+    assert.ok(back, `อ่าน postback กลับไม่ได้: ${data}`);
+    assert.equal(back.totalCents, 120000, "ยอดบิลต้องรอดข้าม postback");
+    assert.equal(back.pct, 10, "เซอร์วิสต้องรอดข้าม postback");
+    assert.equal(back.note, "ค่าข้าว", "ชื่อรายการต้องรอดข้าม postback");
+    checked++;
+  }
+  assert.ok(checked >= 4, `ปุ่มหารบิลต้องถูกตรวจครบ (ตรวจได้ ${checked})`);
+  ok("การ์ดหารบิล: ยอดถูก + ข้อความคัดลอกได้ + postback อ่านกลับได้ครบทุกปุ่ม");
+}
+
+// ชื่อรายการยาว ๆ ต้องไม่ทำให้ postback ทะลุ 300 ไบต์
+{
+  const msgs = H.splitMessages({
+    totalCents: 999900, people: 7,
+    note: "ค่าข้าวเย็นร้านหมูกระทะหน้าปากซอยกับเพื่อนที่ทำงาน",
+  });
+  const j = JSON.stringify(msgs[0]);
+  for (const d of j.match(/"data":"[^"]+"/g) ?? []) {
+    const data = JSON.parse(`{${d}}`).data;
+    assert.ok(Buffer.byteLength(data) <= 300, `postback ยาวเกิน 300 ไบต์: ${data}`);
+  }
+  ok("ชื่อรายการยาวเป็นภาษาไทย → postback ยังไม่ทะลุเพดาน 300 ไบต์");
+}
+
+// จำนวนคนที่ใช้ไม่ได้ ต้องได้การ์ดที่ยังกดต่อได้ ไม่ใช่ข้อความตันหรือ Infinity
+{
+  const bad = H.splitMessages({ totalCents: 120000, people: 0 });
+  assert.ok(!Array.isArray(bad), "เคสผิดพลาดตอบการ์ดใบเดียวพอ");
+  validFlex(bad.contents, "splitBad");
+  const j = JSON.stringify(bad);
+  assert.ok(!j.includes("Infinity") && !j.includes("NaN"), "ห้ามมี Infinity/NaN หลุดออกไปถึงผู้ใช้");
+  assert.ok(j.includes("act=split&t=120000&n=2"), "ต้องมีปุ่มให้เลือกจำนวนคนใหม่ได้เลย");
+  ok("หารด้วย 0 คน → การ์ดเตือนที่ยังกดเลือกจำนวนคนใหม่ได้");
+}
+
+// บอกยอดแต่ไม่บอกจำนวนคน → ถามด้วยปุ่ม ไม่ใช่ให้พิมพ์ใหม่ทั้งประโยค
+{
+  const ask = H.splitAskCard({ totalCents: 100000, people: null, pct: 0, tipCents: 0, note: null });
+  validFlex(ask.contents, "splitAsk");
+  assert.ok(JSON.stringify(ask).includes("act=split&t=100000&n=3"), "ต้องมีปุ่มลัดจำนวนคน");
+  validFlex(H.splitHelpCard().contents, "splitHelp");
+  ok("บอกยอดแต่ไม่บอกคน → การ์ดถามพร้อมปุ่มลัด");
+}
+
 console.log(`\nfeatures.test: ${pass}/${pass} ผ่าน ✅`);

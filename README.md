@@ -69,6 +69,10 @@ A 3B vision-language model on a 6 GB GPU lost to a 215 MB CV model on CPU.
   keeps a multi-slip upload from burning the 300/month push quota
 - **Log several entries in one message**: `กาแฟ 60, ข้าว 50` or one per line. Splitting
   only happens on an explicit separator, so `12,500` stays a single amount
+- **Split the bill**: `หาร 1200 4` → 300 each. Service charge and tips are added before
+  the split (`หาร 1200 4 คน +10%`), an uneven split names who covers the leftover satang
+  instead of rounding money away, and one tap logs your own share as an expense. A plain
+  text summary comes with it, because Flex text cannot be copy-pasted into a group chat
 
 **File attachments (PDF · CSV · TXT)**
 - **PDF** — slips, receipts and statements downloaded from a banking app, read page by
@@ -191,7 +195,7 @@ Deliberately **not** used — and what replaces each:
 | jest / vitest | `node:assert` |
 
 Code we actually wrote: **~3,000 lines of JS** (`src/`) and **~1,400 lines of Python**
-(`ocr/`), covered by 192 tests.
+(`ocr/`), covered by 216 tests.
 
 The trade-off is explicit: every bit of Thai-language intelligence is a hand-written
 rule, so new phrasing means a new rule rather than a model that generalises. In
@@ -224,7 +228,7 @@ Adding a bank means adding one regex to `ocr/slip_parser.py` — no retraining.
 src/            LINE bot — webhook, Flex cards, ledger, rule-based NLU
 ocr/            PaddleOCR HTTP service + Thai document parsers (pure stdlib)
 bench/          Benchmark harnesses and the full measurement write-up
-test/           192 tests, no network or GPU required — `npm test`
+test/           216 tests, no network or GPU required — `npm test`
 scripts/        Rich menu builder, weekly digest cron, OCR sync, DB backup
 assets/         Rich menu images (2 tabbed pages) + RICHMENU-SPEC.md
 ```
@@ -237,7 +241,7 @@ lift `slip_parser.py` into any project without installing anything.
 ## Testing
 
 ```bash
-npm test        # 192 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
+npm test        # 216 tests: money precision, dedup, PDPA deletion, NLU, rate limit, Flex validity
 ```
 
 Every Flex message is validated against LINE's real
@@ -253,6 +257,7 @@ This is built to be forked. The parts most worth reusing on their own:
 - `ocr/payslip_parser.py` — Thai payslip parser with fuzzy label matching
 - `bench/eval_dataset.py` — harness for scoring OCR against your own slip folder
 - `src/flex.js` — reusable Thai Flex card system for LINE bots
+- `src/split.js` — Thai bill-splitting parser and integer-satang maths, no dependencies
 
 If you add a bank or fix a parser edge case, a PR with a sample (redacted) slip and a
 test case is very welcome.

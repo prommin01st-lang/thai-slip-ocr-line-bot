@@ -24,6 +24,7 @@ import { DASHBOARD_TAB } from "./dashboard.js";
 import { parseBill, MAX_ROWS } from "./billText.js";
 import * as pending from "./pending.js";
 import { parseEntries } from "./nlu.js";
+import { parseSplit, splitBill, splitLines, MAX_PEOPLE } from "./split.js";
 import { nowLocal } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
 
@@ -41,6 +42,7 @@ const helpCard = () => card({
     { label: "จดรายจ่าย", value: "พิมพ์ “กาแฟ 60”" },
     { label: "หลายรายการ", value: "พิมพ์ “กาแฟ 60, ข้าว 50”" },
     { label: "จดรายรับ", value: "พิมพ์ “ได้เงินเดือน 30000”" },
+    { label: "หารค่าข้าว", value: "พิมพ์ “หาร 1200 4”" },
     { label: "ส่งเป็นไฟล์", value: "PDF · CSV · TXT ก็อ่านให้ได้" },
     { label: "อย่างอื่น", value: "กดปุ่มด้านล่าง / เมนูล่างจอ" },
   ],
@@ -950,6 +952,137 @@ async function runImport(event, userId) {
   }));
 }
 
+// ---------- หารบิล ----------
+
+/**
+ * ข้อมูลหารบิลอัดลง postback
+ *
+ * ไม่เก็บใน memory เพราะการ์ดเก่าที่เลื่อนขึ้นไปแล้วต้องยังกดได้ถูกต้อง — ถ้าจำแค่
+ * "ครั้งล่าสุด" ผู้ใช้ที่หารสองบิลติดกันแล้วย้อนไปกดใบแรกจะได้ยอดของใบที่สอง
+ * (LINE จำกัด postback ที่ 300 ไบต์ จึงตัดชื่อรายการให้สั้น ภาษาไทย encode แล้ว 9 ไบต์/ตัว)
+ */
+function splitData(act, o, extra = "") {
+  const q = [`act=${act}`, `t=${o.totalCents}`, `n=${o.people}`];
+  if (o.pct) q.push(`p=${o.pct}`);
+  if (o.pctLabel === "ทิป") q.push("pl=t");
+  if (o.tipCents) q.push(`ti=${o.tipCents}`);
+  if (o.roundUp) q.push("r=1");
+  if (o.note) q.push(`x=${encodeURIComponent(o.note.slice(0, 16))}`);
+  return q.join("&") + extra;
+}
+
+/** postback → พารามิเตอร์หารบิล — ค่ามาจากฝั่งผู้ใช้ซึ่งปลอมได้ ต้องตรวจทุกตัว */
+export function splitFromParams(p) {
+  const totalCents = Number(p.get("t"));
+  if (!Number.isInteger(totalCents) || totalCents <= 0) return null;
+  return {
+    totalCents,
+    people: Number(p.get("n")),
+    pct: Number(p.get("p")) || 0,
+    pctLabel: p.get("pl") === "t" ? "ทิป" : "เซอร์วิส",
+    tipCents: Number(p.get("ti")) || 0,
+    roundUp: p.get("r") === "1",
+    note: p.get("x") || null,
+  };
+}
+
+const splitPick = (o, n) => ({ label: `${n} คน`, data: splitData("split", { ...o, people: n }) });
+
+/** พิมพ์ "หาร" มาเฉย ๆ — สอนวิธีพิมพ์ ดีกว่าตอบว่าไม่เข้าใจ */
+export const splitHelpCard = () => card({
+  title: "หารบิล", emoji: "🧮", tone: "info",
+  text: "บอกยอดกับจำนวนคนมาได้เลยครับ ผมหารให้",
+  rows: [
+    { label: "แบบสั้นที่สุด", value: "หาร 1200 4" },
+    { label: "บอกชื่อรายการ", value: "หารค่าข้าว 1200 4 คน" },
+    { label: "มีเซอร์วิสชาร์จ", value: "หาร 1200 4 คน +10%" },
+    { label: "มีทิป", value: "หาร 1200 4 คน ทิป 100" },
+  ],
+  actions: [{ label: "🧮 พิมพ์เลย", fill: "หาร ", data: "act=prompt&kind=split", primary: true }],
+  altText: "วิธีหารบิล",
+});
+
+/** บอกยอดมาแล้วแต่ยังไม่บอกจำนวนคน — ให้กดเลือกเลย เร็วกว่าพิมพ์ใหม่ทั้งประโยค */
+export function splitAskCard(o) {
+  const svc = Math.round((o.totalCents * o.pct) / 100);
+  return card({
+    title: "หารกี่คนครับ?", emoji: "🧮", tone: "info",
+    big: L.fromCents(o.totalCents), bigLabel: o.note ? `ยอด${o.note}` : "ยอดบิล",
+    rows: [
+      o.pct ? { label: `${o.pctLabel} ${o.pct}%`, value: `+ ${L.fromCents(svc)}` } : null,
+      o.tipCents ? { label: "ทิป", value: `+ ${L.fromCents(o.tipCents)}` } : null,
+    ],
+    text: "กดจำนวนคนได้เลย หรือพิมพ์ “หาร <ยอด> <จำนวนคน>”",
+    actions: [
+      [splitPick(o, 2), splitPick(o, 3), splitPick(o, 4)],
+      [splitPick(o, 5), splitPick(o, 6), splitPick(o, 8)],
+      { label: "⌨️ พิมพ์จำนวนคนเอง", data: "act=prompt&kind=split",
+        fill: `หาร ${L.fromCents(o.totalCents).replace(/,/g, "")} ` },
+    ],
+    altText: `หาร ${L.fromCents(o.totalCents)} บาท กี่คน`,
+  });
+}
+
+/** จำนวนคนใช้ไม่ได้ (0 คน / เกิน MAX_PEOPLE) — ต้องกดต่อได้ ไม่ใช่ตันอยู่แค่คำว่าผิด */
+const splitBadPeopleCard = (o) => card({
+  title: "หารแบบนี้ไม่ได้ครับ", emoji: "🧮", tone: "warn",
+  big: L.fromCents(o.totalCents), bigLabel: "ยอดบิล",
+  text: o.people === 0
+    ? "หารด้วย 0 คนไม่ได้ครับ"
+    : `จำนวนคนต้องอยู่ระหว่าง 1–${MAX_PEOPLE} คน (พิมพ์มา ${o.people})`,
+  actions: [
+    [splitPick(o, 2), splitPick(o, 3), splitPick(o, 4)],
+    { label: "⌨️ พิมพ์ใหม่", data: "act=prompt&kind=split",
+      fill: `หาร ${L.fromCents(o.totalCents).replace(/,/g, "")} ` },
+  ],
+});
+
+/**
+ * ผลการหาร = การ์ด + **ข้อความธรรมดาอีกใบ**
+ *
+ * ใบที่สองมีไว้ให้กดค้างคัดลอกไปวางในกลุ่มเพื่อน — ตัวหนังสือใน Flex คัดลอกไม่ได้
+ * ซึ่งเป็นสิ่งแรกที่คนอยากทำต่อหลังหารเสร็จ (เจอตอนใช้จริงกับการ์ดอื่นมาแล้ว)
+ */
+export function splitMessages(o) {
+  const r = splitBill(o);
+  if (!r) return splitBadPeopleCard(o);
+
+  const F = L.fromCents;
+  const step = [
+    r.people > 1 ? { label: "➖ ลดคน", data: splitData("split", { ...o, people: r.people - 1 }) } : null,
+    r.people < MAX_PEOPLE ? { label: "➕ เพิ่มคน", data: splitData("split", { ...o, people: r.people + 1 }) } : null,
+  ].filter(Boolean);
+
+  return [
+    card({
+      title: o.note ? `หาร${o.note}` : "หารบิล", emoji: "🧮", tone: "success",
+      big: F(r.shareCents), bigLabel: `คนละ · หาร ${r.people} คน`,
+      rows: [
+        { label: "ยอดบิล", value: `${F(r.totalCents)} บาท` },
+        r.svcCents ? { label: `${r.pctLabel} ${r.pct}%`, value: `+ ${F(r.svcCents)}` } : null,
+        r.tipCents ? { label: "ทิป", value: `+ ${F(r.tipCents)}` } : null,
+        r.svcCents || r.tipCents
+          ? { label: "รวมทั้งสิ้น", value: `${F(r.grandCents)} บาท`, strong: true } : null,
+        r.roundUp ? { label: "เก็บได้ทั้งหมด", value: `${F(r.collectedCents)} บาท` } : null,
+      ],
+      notes: [
+        // เศษสตางค์เป็นเรื่องเล็กแต่ถ้าไม่บอก ยอดที่เก็บได้จริงจะไม่ตรงกับบิลแล้วหาไม่เจอว่าหายไปไหน
+        r.oddCents ? `หารไม่ลงตัว — ${r.oddCents} คนต้องจ่าย ${F(r.shareCents + 1)} บาท` : null,
+        r.surplusCents ? `ปัดขึ้นแล้วเก็บเกินมา ${F(r.surplusCents)} บาท เอาไว้เป็นทิปได้` : null,
+      ],
+      actions: [
+        { label: `💸 จดส่วนของฉัน ${F(r.shareCents)}`, data: splitData("splitsave", o, "&w=me"), primary: true },
+        { label: `🧾 ฉันจ่ายเต็ม ${F(r.grandCents)}`, data: splitData("splitsave", o, "&w=all") },
+        ...(step.length ? [step] : []),
+        { label: r.roundUp ? "🔢 คิดเศษตามจริง" : "⬆️ ปัดขึ้นเป็นบาท",
+          data: splitData("split", { ...o, roundUp: !r.roundUp }) },
+      ],
+      altText: `หาร ${F(r.grandCents)} บาท ${r.people} คน คนละ ${F(r.shareCents)} บาท`,
+    }),
+    { type: "text", text: splitLines(r, o.note) },
+  ];
+}
+
 // ---------- รายการ ----------
 
 const LIST_LIMIT = 8;
@@ -1069,6 +1202,12 @@ async function handlePostback(event) {
       return respond(event, card({
         title: "ตั้งงบ", emoji: "📌", tone: "info",
         text: "ผมเติม “งบ ” ไว้ในช่องพิมพ์ให้แล้ว\nพิมพ์จำนวนเงินต่อท้าย แล้วกดส่ง\n\nเช่น “งบ 20000”",
+      }));
+    }
+    if (kind === "split") {
+      return respond(event, card({
+        title: "หารบิล", emoji: "🧮", tone: "info",
+        text: "ผมเติม “หาร ” ไว้ในช่องพิมพ์ให้แล้ว\nพิมพ์ยอดกับจำนวนคนต่อท้าย แล้วกดส่ง\n\nเช่น “หาร 1200 4”",
       }));
     }
     return;
@@ -1251,6 +1390,46 @@ async function handlePostback(event) {
     return respond(event, card({
       title: "ยกเลิกการนำเข้าแล้ว", emoji: "👌", tone: "neutral",
       text: "ไม่ได้บันทึกอะไรลงไปครับ ส่งไฟล์ใหม่เข้ามาได้ตลอด",
+    }));
+  }
+
+  // --- หารบิล ---
+  if (act === "split") {
+    const o = splitFromParams(p);
+    if (!o) return respond(event, errorMessage("อ่านยอดที่จะหารไม่ออกครับ — พิมพ์ใหม่ได้เลย เช่น “หาร 1200 4”"));
+    return respond(event, splitMessages(o));
+  }
+  if (act === "splitsave") {
+    const o = splitFromParams(p);
+    const r = o && splitBill(o);
+    if (!r) return respond(event, errorMessage("อ่านยอดที่จะหารไม่ออกครับ — พิมพ์ใหม่ได้เลย เช่น “หาร 1200 4”"));
+    // จ่ายเต็มบิล = เงินที่ออกจากกระเป๋าเราจริงคือยอดรวม ส่วนที่เพื่อนคืนค่อยจดเป็นรายรับทีหลัง
+    // (จดแค่ส่วนของตัวเองตั้งแต่แรกจะทำให้ยอดในสรุปไม่ตรงกับเงินในบัญชีจริง)
+    const all = p.get("w") === "all";
+    const cents = all ? r.grandCents : r.shareCents;
+    const base = o.note || "หารบิล";
+    const note = all ? `${base} (จ่ายเต็ม หาร ${r.people} คน)` : `${base} (หารกัน ${r.people} คน)`;
+    const rec = L.recordEntry(userId, { direction: "out", amountCents: cents, note, guessed: false });
+    if (!rec.ok) {
+      return respond(event, rec.reason === "no_consent"
+        ? consentCard("ยังไม่ได้ให้ความยินยอม เลยยังจดรายการให้ไม่ได้")
+        : errorMessage("บันทึกไม่สำเร็จครับ ลองใหม่อีกครั้ง"));
+    }
+    const cat = L.getTxn(userId, rec.txnId)?.category ?? null;
+    return respond(event, card({
+      title: "บันทึกแล้ว", emoji: "💸", tone: "success",
+      big: L.fromCents(cents), bigLabel: all ? "รายจ่าย · จ่ายเต็มบิล" : "รายจ่าย · ส่วนของฉัน",
+      rows: [
+        { label: "รายการ", value: note },
+        cat ? { label: "หมวด", value: labelOf(cat) } : null,
+        all ? { label: "เพื่อนต้องคืน", value: `${L.fromCents(r.grandCents - r.shareCents)} บาท` } : null,
+      ],
+      notes: all ? ["ตอนเพื่อนโอนคืน ส่งสลิปเข้ามาได้เลย ผมจะจดเป็นรายรับให้"] : [],
+      actions: [
+        ...categoryButtons(rec.txnId, cat),
+        { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
+        { label: "📊 ดูสรุป", data: "act=summary" },
+      ],
     }));
   }
 
@@ -1732,6 +1911,22 @@ async function handleText(event) {
         ],
         altText: `เชื่อม Google Sheet แล้ว — คัดลอก ${queued} รายการ`,
       }));
+    }
+  }
+
+  // --- หารบิล: "หาร 1200 4" ---
+  //
+  // ⚠️ ต้องดัก **ก่อน** NLU — "หาร 1200 4" มีตัวเลขครบทุกอย่างที่ NLU ต้องการ
+  // ถ้าปล่อยผ่านจะกลายเป็นรายจ่าย 1,200 บาทชื่อ "4" ทันทีโดยไม่มีอะไรบอก
+  //
+  // และอยู่ **ก่อน** ด่านความยินยอม — การหารเลขไม่ได้เก็บอะไรลงฐานข้อมูลเลย
+  // จะขอความยินยอมตอนกดปุ่ม "จดส่วนของฉัน" ก็ยังทัน
+  {
+    const sp = parseSplit(text);
+    if (sp) {
+      if (sp.totalCents === null) return respond(event, splitHelpCard());
+      if (sp.people === null) return respond(event, splitAskCard(sp));
+      return respond(event, splitMessages(sp));
     }
   }
 
