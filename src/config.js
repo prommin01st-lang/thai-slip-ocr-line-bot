@@ -1,5 +1,6 @@
 // config.js — โหลด env + ตรวจว่าครบก่อนสตาร์ท (fail fast ดีกว่าไปพังตอน request แรก)
 import "dotenv/config";
+import { validateEnv } from "./envValidation.js";
 
 const missing = [];
 
@@ -22,6 +23,13 @@ const saEmail = (process.env.GOOGLE_SA_EMAIL || "").trim();
 const saKey = (process.env.GOOGLE_SA_KEY || "").replace(/\\n/g, "\n").trim();
 
 export const config = {
+  evidenceEnabled: /^(1|true|on|yes)$/i.test(process.env.EVIDENCE_ENABLED || ""),
+  s3Bucket: process.env.S3_BUCKET || "",
+  s3Region: process.env.S3_REGION || "auto",
+  s3Endpoint: process.env.S3_ENDPOINT || undefined,
+  s3AccessKeyId: process.env.S3_ACCESS_KEY_ID || "",
+  s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
+  s3ForcePathStyle: /^(1|true|on|yes)$/i.test(process.env.S3_FORCE_PATH_STYLE || ""),
   // จาก LINE Developers Console → ช่อง Messaging API
   channelSecret: required("LINE_CHANNEL_SECRET"),
   channelAccessToken: required("LINE_CHANNEL_ACCESS_TOKEN"),
@@ -86,5 +94,11 @@ export const config = {
 if (missing.length) {
   console.error(`✗ ขาด env: ${missing.join(", ")}`);
   console.error("  คัดลอก .env.example เป็น .env แล้วเติมค่าจาก LINE Developers Console");
+  process.exit(1);
+}
+
+const validation = validateEnv(process.env);
+if (validation.errors.length) {
+  console.error(validation.errors.join("\n"));
   process.exit(1);
 }

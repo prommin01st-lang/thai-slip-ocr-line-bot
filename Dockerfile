@@ -15,14 +15,15 @@ COPY src/ ./src/
 #   weekly.mjs  สรุปรายสัปดาห์ (cron)
 #   backup.mjs  สำรอง DB ด้วย VACUUM INTO (คัดลอกไฟล์ .db เฉย ๆ ไม่ได้ เพราะเปิด WAL)
 # ที่เหลือใน scripts/ ตั้งใจไม่เอาเข้า — รันจากเครื่อง dev ครั้งเดียวพอ (rich menu ฯลฯ)
-COPY scripts/weekly.mjs scripts/backup.mjs ./scripts/
+COPY scripts/weekly.mjs scripts/backup.mjs scripts/check-env.mjs scripts/jobs.mjs ./scripts/
 
 # มาสคอตต้องอยู่ใน image — LINE ไปดึงรูปจาก URL เองตอนแสดงการ์ด
 # (ที่เหลือใน assets/ ถูก .dockerignore กันไว้ ดูเหตุผลในไฟล์นั้น)
 COPY assets/Mascot/ ./assets/Mascot/
+COPY assets/fonts/ ./assets/fonts/
 
 # data/ เก็บ SQLite — ต้องเป็นของ user ที่รัน ไม่งั้นเขียนไม่ได้
-RUN mkdir -p /app/data && chown -R node:node /app
+RUN mkdir -p /app/data && chmod 700 /app/data && chown -R node:node /app
 USER node
 
 EXPOSE 3000

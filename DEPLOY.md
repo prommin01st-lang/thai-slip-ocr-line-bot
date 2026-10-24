@@ -614,8 +614,13 @@ git checkout <commit ก่อนหน้า> && docker compose up -d --build
 
 ระบบเก็บ**ข้อมูลการเงินของบุคคลจริง** และสลิปหนึ่งใบมีข้อมูลของ**คนที่ไม่ได้มาใช้บอทด้วย** (ผู้รับโอน)
 
-**ระบบทำให้แล้ว:** ขอความยินยอมก่อนเก็บ · ไม่เก็บรูปสลิป (เก็บแค่ sha256) ·
+**ระบบทำให้แล้ว:** ขอความยินยอมก่อนเก็บ · ไม่เก็บรูปสลิปโดยปริยาย (เก็บไฟล์เมื่อแนบหลักฐานหรือเปิดเก็บต้นฉบับ) ·
 เลขบัญชีเก็บแค่ 4 ตัวท้าย · `ลบข้อมูลของฉัน` ลบจริงทุกตาราง
 
 **เจ้าของระบบต้องทำเอง:** เข้ารหัสดิสก์ VPS · เก็บ backup ในที่ปลอดภัย ·
 ไม่ log ข้อความ OCR ดิบลงไฟล์ถาวร
+
+
+## Updated readiness (phases 1–5)
+
+Production now requires explicit admins, an OCR token and a real HTTPS public URL. Follow [docs/PRODUCTION.md](docs/PRODUCTION.md) for the current configuration, evidence storage, durable jobs and backup rules before deploying.

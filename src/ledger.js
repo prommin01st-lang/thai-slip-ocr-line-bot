@@ -1,3 +1,5 @@
+import { atomic } from "./db.js";
+import { replayWrite } from "./replay.js";
 // ledger.js — ตรรกะสมุดบัญชี: ยินยอม → กันซ้ำ → ตัดสินทิศทาง → บันทึก → สรุป
 //
 // แยกจาก db.js (schema/connection) เพื่อให้เทสได้โดยใช้ DB ในหน่วยความจำ
@@ -108,6 +110,9 @@ export function grantConsent(userId, displayName = null) {
  * (`PRAGMA foreign_keys = ON` ใน db.js ทำให้ CASCADE ทำงาน; push_log ไม่มี FK ต้องลบเอง)
  */
 export function deleteAllData(userId) {
+  return atomic(db(), () => deleteUserData(userId));
+}
+function deleteUserData(userId) {
   const d = db();
   const before = countUserRows(userId);
 
@@ -129,9 +134,11 @@ export function deleteAllData(userId) {
   // ⚠️ ตารางที่ **ไม่มี FOREIGN KEY** ไปที่ users จะไม่ถูก CASCADE — ต้องลบเอง
   //    (`push_log`, `alert_log` ตั้งใจไม่ผูก FK เพราะเป็น log ที่ต้องเขียนได้เร็ว)
   //    ลืมตัวใดตัวหนึ่ง = "ลบข้อมูลของฉัน" ลบไม่หมดจริง ผิด PDPA
-  for (const t of ["push_log", "alert_log", "slips"]) {
+  for (const t of ["push_log", "alert_log", "slips", "pending_inputs"]) {
     d.prepare(`DELETE FROM ${t} WHERE line_user_id = ?`).run(userId);
   }
+  d.prepare("DELETE FROM event_results WHERE event_key IN (SELECT event_key FROM event_inbox WHERE line_user_id=?)").run(userId);
+  d.prepare("UPDATE event_inbox SET payload=NULL, status='done', last_error=NULL WHERE line_user_id=?").run(userId);
   d.prepare("DELETE FROM users WHERE line_user_id = ?").run(userId);   // CASCADE ที่เหลือ
   return before;
 }
@@ -294,6 +301,7 @@ export function findDuplicate(userId, { imageSha256 = null, ref = null, parsed =
  *   low    → ไม่บันทึก  ข้อมูลผิดที่เก็บเงียบ ๆ แย่กว่าไม่เก็บ
  */
 export function recordSlip(userId, parsed, { imageSha256 = null, direction = null } = {}) {
+  return replayWrite(db(), () => atomic(db(), () => {
   if (!hasConsent(userId)) return { ok: false, reason: "no_consent" };
 
   const cents = toCents(parsed.amount);
@@ -325,6 +333,7 @@ export function recordSlip(userId, parsed, { imageSha256 = null, direction = nul
 
   queueSheet(userId, "upsert", Number(txnId));
   return { ok: true, txnId: Number(txnId), direction: dir, status, amountCents: cents };
+  }));
 }
 
 /**
@@ -334,6 +343,7 @@ export function recordSlip(userId, parsed, { imageSha256 = null, direction = nul
  * (ต่างจากสลิปที่ใบเดียวกันส่งซ้ำได้แน่นอน)
  */
 export function recordEntry(userId, entry, { occurredAt: at = null } = {}) {
+  return replayWrite(db(), () => atomic(db(), () => {
   if (!hasConsent(userId)) return { ok: false, reason: "no_consent" };
   if (!entry || entry.amountCents == null) return { ok: false, reason: "no_amount" };
 
@@ -353,6 +363,7 @@ export function recordEntry(userId, entry, { occurredAt: at = null } = {}) {
     direction: entry.direction, amountCents: entry.amountCents,
     status: entry.guessed ? "pending" : "confirmed",
   };
+  }));
 }
 
 // ---------- หมวดหมู่ (เรียนจากผู้ใช้เอง ไม่ต้องมีโมเดล) ----------
@@ -554,12 +565,17 @@ export function getTxn(userId, txnId) {
  * ก็ตรงกับเจตนาของ PDPA มากกว่าเก็บไว้เฉย ๆ
  */
 export function deleteTxn(userId, txnId) {
+  return atomic(db(), () => deleteTransaction(userId, txnId));
+}
+function deleteTransaction(userId, txnId) {
   const d = db();
   const info = d.prepare(
     "UPDATE txns SET status='rejected' WHERE id=? AND line_user_id=? AND status!='rejected'")
     .run(txnId, userId);
   if (info.changes > 0) {
     d.prepare("DELETE FROM slips WHERE txn_id = ? AND line_user_id = ?").run(txnId, userId);
+    d.prepare("DELETE FROM evidence WHERE txn_id=? AND line_user_id=?").run(txnId, userId);
+    d.prepare("DELETE FROM attachment_intents WHERE txn_id=? AND line_user_id=?").run(txnId,userId);
     queueSheet(userId, "delete", txnId);
   }
   return info.changes > 0;

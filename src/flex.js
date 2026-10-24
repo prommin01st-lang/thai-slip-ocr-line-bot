@@ -1,3 +1,4 @@
+import { config } from "./config.js";
 // flex.js — ผล JSON จาก slip-ocr-th → Flex Message ภาษาไทย
 //
 // parser ทุกตัวคืน confidence: high|medium|low + warnings[] มาด้วย — เอามาแสดงตรง ๆ
@@ -812,6 +813,7 @@ export function txnListBubble(rows, fromCents, filter = {}) {
   const items = rows.map((t) => {
     // ปุ่ม 3 ช่องเสมอ แถวที่ใช้ไม่ครบเติม filler — ไอคอนทุกแถวจะได้ตรงคอลัมน์กัน
     const acts = [
+      ...(config.evidenceEnabled ? [chip("📎", {type:"postback",label:"หลักฐาน",data:`act=evidence&id=${t.id}`})] : []),
       chip("🗑", { type: "postback", label: "ลบ", data: `act=del&id=${t.id}` }),
       // "แก้ยอด" ใช้ fillInText เติม "แก้ 12 " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
       chip("✏️", { type: "postback", label: "แก้ยอด", data: `act=prompt&kind=edit&id=${t.id}`,

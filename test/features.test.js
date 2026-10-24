@@ -370,7 +370,7 @@ ok("ปุ่มเลือกหมวดถูกต้อง + กันห�
 // เงินก้อนนั้นบันทึกไม่ได้อีกเลย แถมบอทตอบว่า "บันทึกไว้เรียบร้อยแล้ว" ซึ่งไม่จริง
 const D = "Udup0000000000000000000000000001";
 L.ensureUser(D, "D"); L.grantConsent(D);
-const dupSlip = slip({ ref: "DUP123456789", amount: "70.00", date: "2026-08-08", time: "16:20" });
+const dupSlip = slip({ ref: "DUP123456789", amount: "70.00", date: nowLocal().slice(0, 10), time: "16:20" });
 
 const d1 = L.recordSlip(D, dupSlip, { imageSha256: "dup-hash", direction: "out" });
 assert.equal(d1.ok, true);

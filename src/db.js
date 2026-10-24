@@ -5,7 +5,7 @@
 //
 // 🔒 ไฟล์ DB มีข้อมูลการเงินของคนจริง — gitignore ไว้แล้ว
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 
 // migration เรียงตามลำดับ; `PRAGMA user_version` บอกว่ารันถึงตัวไหนแล้ว
@@ -196,11 +196,58 @@ const MIGRATIONS = [
   );
   CREATE INDEX sheet_outbox_user ON sheet_outbox (line_user_id, id);
   `,
+  // Durable inbox, replay-safe accounting, private attachments and immutable documents.
+  `
+  CREATE TABLE event_inbox (
+    event_key TEXT PRIMARY KEY, line_user_id TEXT, payload TEXT,
+    status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
+    available_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+    last_error TEXT
+  );
+  CREATE INDEX inbox_ready ON event_inbox(status, available_at, created_at);
+  CREATE TABLE event_results (
+    event_key TEXT NOT NULL, slot INTEGER NOT NULL, result TEXT NOT NULL,
+    PRIMARY KEY(event_key, slot)
+  );
+  CREATE TABLE evidence (
+    id INTEGER PRIMARY KEY, line_user_id TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+    txn_id INTEGER NOT NULL REFERENCES txns ON DELETE CASCADE,
+    object_key TEXT NOT NULL UNIQUE, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE(txn_id, sha256)
+  );
+  CREATE TABLE object_gc (
+    object_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TRIGGER evidence_gc AFTER DELETE ON evidence BEGIN
+    INSERT OR IGNORE INTO object_gc(object_key) VALUES(OLD.object_key);
+  END;
+  CREATE TABLE attachment_intents (
+    line_user_id TEXT PRIMARY KEY REFERENCES users ON DELETE CASCADE,
+    txn_id INTEGER NOT NULL REFERENCES txns ON DELETE CASCADE, expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE pending_inputs (line_user_id TEXT PRIMARY KEY, data TEXT NOT NULL, expires_at INTEGER NOT NULL);
+  CREATE TABLE documents (
+    id INTEGER PRIMARY KEY, line_user_id TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('invoice','receipt')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','issued','cancelled')),
+    number TEXT UNIQUE, snapshot TEXT NOT NULL, txn_id INTEGER REFERENCES txns ON DELETE SET NULL,
+    created_at TEXT NOT NULL, issued_at TEXT, cancelled_at TEXT
+  );
+  CREATE TABLE document_sequences (prefix TEXT PRIMARY KEY, value INTEGER NOT NULL);
+  CREATE TABLE private_links (
+    token TEXT PRIMARY KEY, line_user_id TEXT NOT NULL REFERENCES users ON DELETE CASCADE,
+    kind TEXT NOT NULL, target_id INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  );
+  `,
+
 ];
 
 export function open(path = process.env.DB_PATH || "data/slipingman.db") {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  if (path !== ":memory:") chmodSync(path, 0o600);
+  db.exec("PRAGMA busy_timeout = 5000");
 
   // WAL = อ่านกับเขียนพร้อมกันได้ (bot ตอบ webhook ขณะ worker เขียนอยู่)
   db.exec("PRAGMA journal_mode = WAL");
@@ -210,8 +257,10 @@ export function open(path = process.env.DB_PATH || "data/slipingman.db") {
 
   const { user_version: v } = db.prepare("PRAGMA user_version").get();
   for (let i = v; i < MIGRATIONS.length; i++) {
-    db.exec(MIGRATIONS[i]);
-    db.exec(`PRAGMA user_version = ${i + 1}`);
+    atomic(db, () => {
+      db.exec(MIGRATIONS[i]);
+      db.exec(`PRAGMA user_version = ${i + 1}`);
+    });
   }
   return db;
 }
@@ -227,7 +276,8 @@ export function toCents(s) {
   if (s === null || s === undefined) return null;
   const m = String(s).replace(/,/g, "").trim().match(/^(\d+)(?:\.(\d{1,2}))?$/);
   if (!m) return null;
-  return Number(m[1]) * 100 + Number((m[2] ?? "0").padEnd(2, "0"));
+  const cents = Number(m[1]) * 100 + Number((m[2] ?? "0").padEnd(2, "0"));
+  return Number.isSafeInteger(cents) ? cents : null;
 }
 
 /** 123456 → "1,234.56" */
@@ -256,3 +306,20 @@ export const TZ = "Asia/Bangkok";
  */
 export const nowLocal = (tz = TZ) =>
   new Date().toLocaleString("sv-SE", { timeZone: tz }).slice(0, 16);
+
+// Synchronous savepoints compose safely, including replay result + accounting writes.
+let savepoint = 0;
+export function atomic(db, fn) {
+  const name = `write_${++savepoint}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const result = fn();
+    if (result?.then) throw new Error("atomic callback must be synchronous");
+    db.exec(`RELEASE ${name}`);
+    return result;
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${name}`);
+    db.exec(`RELEASE ${name}`);
+    throw err;
+  }
+}

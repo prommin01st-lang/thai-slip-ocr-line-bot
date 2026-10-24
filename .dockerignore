@@ -29,3 +29,5 @@ Dockerfile
 .dockerignore
 .mcp.json
 dev.sh
+
+!assets/fonts/

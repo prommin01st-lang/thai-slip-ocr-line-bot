@@ -276,3 +276,31 @@ MIT — see [LICENSE](LICENSE).
 <sub>Keywords: thai bank slip ocr · สลิปโอนเงิน · LINE bot · LINE Messaging API ·
 PaddleOCR · Thai OCR · receipt OCR · payslip parser · expense tracker · บันทึกรายรับรายจ่าย ·
 self-hosted · no GPU · Docker</sub>
+
+## Evidence and billing
+
+Private evidence is optional (`EVIDENCE_ENABLED=on` plus a private S3-compatible bucket).
+After recording `กาแฟ 60`, use the 📎 action or `แนบหลักฐาน #12`, then send an image/PDF
+within ten minutes. This attaches to transaction #12 without increasing its amount.
+`หลักฐาน #12` lists files; delete/re-attach to replace one. `ยกเลิกแนบ` cancels the prompt.
+Use `เก็บต้นฉบับ เปิด` to explicitly retain future slip originals, or `เก็บต้นฉบับ ปิด`
+to stop. Older images cannot be recovered if they were not stored at the time.
+
+Set an issuer with `ผู้ออก ร้านตัวอย่าง | ที่อยู่ | โทร`, then send:
+
+```text
+บิล คุณสมชาย | ที่อยู่ลูกค้า
+กาแฟ | 2 | 100.25
+ส่วนลด | 10
+หมายเหตุ | ชำระภายใน 7 วัน
+```
+
+Use `ใบเสร็จ` instead of `บิล` for a receipt. Review the draft PDF and press **ยืนยันออกเอกสาร**.
+To link a receipt to an existing confirmed THB income, use `ใบเสร็จ #12 ชื่อลูกค้า`.
+Issuing either document does not create an accounting transaction. Issued snapshots and numbers
+are retained; cancellation requires confirmation. `เอกสาร` shows the latest ten; `เอกสาร #12`
+opens a specific document. Edit a draft with `แก้เอกสาร #12` followed by a newline and the full
+replacement document text. Documents are general invoices/receipts, not tax invoices or e-Tax.
+
+See [production readiness and recovery](docs/PRODUCTION.md) for env checks, private storage,
+durable jobs, backups and the phase-6 deployment checklist.

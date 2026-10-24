@@ -1,0 +1,37 @@
+# Optional self-hosted private S3 on the same VM.
+# docker compose -f docker-compose.yml -f compose.storage.yml up -d --build
+services:
+  storage:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    command: ["mini", "-dir=/data", "-s3.port=8333"]
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?Set S3_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Set S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET:-slipingman-evidence}
+    volumes:
+      - evidence-data:/data
+    networks:
+      - evidence-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+  bot:
+    depends_on:
+      storage:
+        condition: service_healthy
+    networks:
+      - default
+      - evidence-internal
+networks:
+  evidence-internal:
+    internal: true
+volumes:
+  evidence-data:

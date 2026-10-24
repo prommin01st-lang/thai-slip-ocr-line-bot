@@ -7,12 +7,13 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
-    "test": "node --disable-warning=ExperimentalWarning test/queue.test.js && node --disable-warning=ExperimentalWarning test/flex.test.js && node --disable-warning=ExperimentalWarning test/ledger.test.js && node --disable-warning=ExperimentalWarning test/nlu.test.js && node --disable-warning=ExperimentalWarning test/split.test.js && node --disable-warning=ExperimentalWarning test/batch.test.js && node --disable-warning=ExperimentalWarning test/sheets.test.js && node --disable-warning=ExperimentalWarning test/import.test.js && node --disable-warning=ExperimentalWarning test/features.test.js && node --disable-warning=ExperimentalWarning test/whitelist.test.js",
+    "test": "node test/run.mjs",
     "dev:all": "./dev.sh",
     "tunnel": "tailscale funnel --bg 3000",
     "tunnel:off": "tailscale funnel --https=443 off",
     "richmenu": "node scripts/richmenu.mjs",
-    "weekly": "node --disable-warning=ExperimentalWarning scripts/weekly.mjs"
+    "weekly": "node --disable-warning=ExperimentalWarning scripts/weekly.mjs",
+    "check:env": "node scripts/check-env.mjs --production"
   },
   "keywords": [
     "thai",
@@ -36,9 +37,11 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1156.0",
     "@line/bot-sdk": "^11.2.0",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pdfkit": "^0.20.2"
   },
   "repository": {
     "type": "git",

@@ -1,3 +1,7 @@
+import { UserError } from "./errors.js";
+import { replayWrite, eventValue } from "./replay.js";
+import { handleFinance } from "./financeCommands.js";
+import * as evidence from "./evidence.js";
 // handlers.js — ตรรกะตอบกลับแต่ละ event จาก LINE
 //
 // จังหวะที่สำคัญที่สุด: OCR ใช้เวลาหลายวินาทีและเข้าคิว → **ห้ามทำใน request ของ webhook**
@@ -25,7 +29,7 @@ import { parseBill, MAX_ROWS } from "./billText.js";
 import * as pending from "./pending.js";
 import { parseEntries } from "./nlu.js";
 import { parseSplit, splitBill, splitLines, MAX_PEOPLE } from "./split.js";
-import { nowLocal } from "./db.js";
+import { nowLocal, atomic } from "./db.js";
 import { checkAlerts, thisMonth, thisWeek, quota } from "./notify.js";
 
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: config.channelAccessToken });
@@ -40,6 +44,8 @@ const helpCard = () => card({
   text: "ส่งรูปสลิป ใบเสร็จ หรือใบเงินเดือนเข้ามาได้เลย (ทีละหลายใบก็ได้)\nหรือพิมพ์สั้น ๆ เช่น “กาแฟ 60”",
   rows: [
     { label: "จดรายจ่าย", value: "พิมพ์ “กาแฟ 60”" },
+    { label: "หลักฐาน", value: "พิมพ์ “แนบหลักฐาน #รหัสรายการ”" },
+    { label: "เอกสาร", value: "พิมพ์ “บิล” หรือ “ใบเสร็จ”" },
     { label: "หลายรายการ", value: "พิมพ์ “กาแฟ 60, ข้าว 50”" },
     { label: "จดรายรับ", value: "พิมพ์ “ได้เงินเดือน 30000”" },
     { label: "หารค่าข้าว", value: "พิมพ์ “หาร 1200 4”" },
@@ -59,7 +65,7 @@ const consentCard = (lead) => card({
   text: (lead ? lead + "\n\n" : "") +
         "ระบบจะเก็บ: ยอดเงิน วันเวลา เลขอ้างอิง ชื่อคู่ค้า และเลขบัญชี 4 ตัวท้าย",
   rows: [
-    { label: "ไม่เก็บ", value: "รูปสลิป (เก็บแค่ลายนิ้วมือไฟล์กันบันทึกซ้ำ)" },
+    { label: "ไม่เก็บ", value: "รูปสลิปโดยปริยาย; เก็บไฟล์เมื่อคุณเลือกแนบหลักฐานหรือเปิดเก็บต้นฉบับ" },
     { label: "ลบได้", value: "ตลอดเวลา ด้วย “ลบข้อมูลของฉัน”" },
   ],
   actions: [{ label: "✅ ยินยอม เริ่มใช้งาน", text: "ยินยอม", primary: true }],
@@ -410,10 +416,7 @@ async function showLoading(userId, seconds = 15) {
  */
 async function downloadContent(message, maxBytes = config.maxImageBytes, what = "รูป") {
   if (message.contentProvider?.type === "external") {
-    const url = message.contentProvider.originalContentUrl;
-    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`ดึง${what}จาก external provider ไม่ได้ (${res.status})`);
-    return Buffer.from(await res.arrayBuffer());
+    throw new UserError("กรุณาส่งไฟล์ผ่าน LINE โดยตรง");
   }
   const stream = await blob.getMessageContent(message.id);
   const chunks = [];
@@ -422,7 +425,7 @@ async function downloadContent(message, maxBytes = config.maxImageBytes, what = 
     size += chunk.length;
     if (size > maxBytes) {
       stream.destroy();
-      throw new Error(`${what}ใหญ่เกิน ${Math.round(maxBytes / 1024 / 1024)}MB`);
+      throw new UserError(`${what}ใหญ่เกิน ${Math.round(maxBytes / 1024 / 1024)}MB`);
     }
     chunks.push(chunk);
   }
@@ -473,6 +476,7 @@ function savedCard(rec, amount, occurredAt, category = null) {
                data: `act=dir&id=${rec.txnId}&v=${rec.direction === "in" ? "out" : "in"}` }]),
         // ทิศทางยังไม่รู้ = ยังไม่ควรถามเรื่องหมวด ถามทีละเรื่องพอ
         ...(rec.direction === "out" ? categoryButtons(rec.txnId, category) : []),
+        ...(config.evidenceEnabled ? [{label:"📎 หลักฐาน",data:`act=evidence&id=${rec.txnId}`}] : []),
         { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
         { label: "📊 ดูสรุป", data: "act=summary" },
       ],
@@ -497,7 +501,7 @@ async function handleSingleImage(event) {
     const hash = L.sha256(buffer);
 
     // เช็คซ้ำ **ก่อน** OCR — ไฟล์เดิมไม่ต้องอ่านใหม่ ประหยัดไปทั้งรอบ
-    if (consented) {
+    if (consented && !event._durable) {
       const dup = L.findDuplicate(userId, { imageSha256: hash });
       if (dup) {
         // ต้องบอกว่าซ้ำกับ "รายการไหน" ไม่ใช่แค่บอกว่าซ้ำ
@@ -537,6 +541,9 @@ async function handleSingleImage(event) {
       messages.push(consentCard("อ่านผลให้แล้ว แต่ยังไม่ได้บันทึก"));
     } else {
       const rec = L.recordSlip(userId, result, { imageSha256: hash });
+      if (rec.ok && config.evidenceEnabled && L.getPref(userId,"save_originals")==="on") {
+        await evidence.attach(userId,rec.txnId,buffer);
+      }
       // ยังไม่รู้ว่ารับหรือจ่าย → ถามด้วย quick reply (ต้องเป็นข้อความสุดท้าย ปุ่มถึงจะโผล่)
       if (rec.ok && rec.direction === "unknown") {
         // ถามทิศทางก่อน — เรื่องเดือนค่อยถามต่อหลังผู้ใช้ตอบ (quick reply โผล่ได้ทีละใบ)
@@ -556,6 +563,7 @@ async function handleSingleImage(event) {
       if (consented) await notifyAfter(userId);
     }
   } catch (err) {
+    if (event._durable && !(err instanceof UserError)) throw err;
     console.error(`[OCR ล้มเหลว] ${err.stack || err.message}`);
     let msg;
     if (err instanceof ocr.OcrAuthError) {
@@ -601,10 +609,11 @@ async function processSlip(userId, event) {
 
   // เช็คซ้ำก่อน OCR — ประหยัดไปทั้งรอบเหมือนทางใบเดียว
   const dup = L.findDuplicate(userId, { imageSha256: hash });
-  if (dup) return { kind: "dup" };
+  if (dup && !event._durable) return { kind: "dup" };
 
   const parsed = await enqueue(() => ocr.parseImage(buffer));
   const rec = L.recordSlip(userId, parsed, { imageSha256: hash });
+  if (rec.ok && config.evidenceEnabled && L.getPref(userId,"save_originals")==="on") await evidence.attach(userId,rec.txnId,buffer);
   if (!rec.ok) return { kind: "skip", reason: rec.reason };
   return { kind: "saved", rec, parsed };
 }
@@ -771,6 +780,7 @@ async function handleFile(event) {
       ? await handlePdfFile(event, userId, name)
       : await handleTextFile(event, userId, name);
   } catch (err) {
+    if (event._durable && !(err instanceof UserError)) throw err;
     console.error(`[อ่านไฟล์ล้มเหลว] ${name}: ${err.stack || err.message}`);
     const msg = err instanceof ocr.OcrTimeoutError
       ? "ไฟล์นี้ใช้เวลาอ่านนานเกินไป ลองแบ่งเป็นไฟล์เล็กลงครับ"
@@ -803,9 +813,12 @@ async function handlePdfFile(event, userId, name) {
   for (const p of pages) {
     const { text, page, source, ...doc } = p;
     const pageHash = `${fileHash}#p${page}`;
-    if (L.findDuplicate(userId, { imageSha256: pageHash, ref: doc.ref })) { dup++; continue; }
+    if (!event._durable && L.findDuplicate(userId, { imageSha256: pageHash, ref: doc.ref })) { dup++; continue; }
     const rec = L.recordSlip(userId, doc, { imageSha256: pageHash });
-    if (rec.ok) { saved.push(rec); continue; }
+    if (rec.ok) {
+      if (config.evidenceEnabled && L.getPref(userId,"save_originals")==="on") await evidence.attach(userId,rec.txnId,buffer);
+      saved.push(rec); continue;
+    }
     skipped.push(SLIP_SKIP[rec.reason] ?? rec.reason);
     // อ่านเป็นสลิปไม่ออกแต่มีข้อความ = น่าจะเป็น statement (หลายรายการในหน้าเดียว)
     // ซึ่ง parser สลิปอ่านไม่ได้โดยธรรมชาติ — เก็บข้อความไว้ลองอีกทางแทนที่จะยอมแพ้
@@ -920,6 +933,7 @@ async function runImport(event, userId) {
     }));
   }
 
+  const {saved,dup,failed} = replayWrite(L.db(), () => atomic(L.db(), () => {
   let saved = 0, dup = 0, failed = 0;
   for (const e of job.entries) {
     // กันซ้ำเท่าที่ทำได้: ยอดตรงและเวลาห่างไม่เกิน 2 นาที = รายการเดิม
@@ -931,6 +945,9 @@ async function runImport(event, userId) {
     // หมวดจากไฟล์ต้องมาก่อนที่ระบบเดาเอง — ผู้ใช้จัดมาแล้วในไฟล์ต้นทาง
     if (e.category) L.setCategory(userId, rec.txnId, e.category);
   }
+
+    return {saved,dup,failed};
+  }));
 
   const left = L.countTxns(userId, { status: "pending" });
   return respond(event, card({
@@ -1427,6 +1444,7 @@ async function handlePostback(event) {
       notes: all ? ["ตอนเพื่อนโอนคืน ส่งสลิปเข้ามาได้เลย ผมจะจดเป็นรายรับให้"] : [],
       actions: [
         ...categoryButtons(rec.txnId, cat),
+        ...(config.evidenceEnabled ? [{label:"📎 หลักฐาน",data:`act=evidence&id=${rec.txnId}`}] : []),
         { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
         { label: "📊 ดูสรุป", data: "act=summary" },
       ],
@@ -1607,7 +1625,7 @@ async function handleText(event) {
       title: "ข้อมูลที่เก็บไว้", emoji: "🔒", tone: "info",
       rows: [
         { label: "ธุรกรรม", value: `${c.txns} รายการ` },
-        { label: "สลิป", value: `${c.slips} ใบ (ไม่เก็บรูป)` },
+        { label: "สลิป", value: `${c.slips} ใบ` },
         { label: "บัญชีที่จำไว้", value: `${c.accounts}` },
         { label: "หมวดที่จำไว้", value: `${c.hints}` },
         { label: "ให้ความยินยอม", value: u.consent_at.slice(0, 10) },
@@ -1981,7 +1999,8 @@ async function handleText(event) {
               : []),
             // รายรับไม่ต้องจัดหมวด — หมวดมีไว้คุมรายจ่าย (งบ/สรุปว่าใช้อะไรมากสุด)
             ...(rec.direction === "out" ? categoryButtons(rec.txnId, cat) : []),
-            { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
+            ...(config.evidenceEnabled ? [{label:"📎 หลักฐาน",data:`act=evidence&id=${rec.txnId}`}] : []),
+        { label: "🗑 ลบรายการนี้", data: `act=del&id=${rec.txnId}` },
             { label: "📊 ดูสรุป", data: "act=summary" },
           ],
         }));
@@ -1994,7 +2013,9 @@ async function handleText(event) {
 }
 
 /** จุดเข้าเดียวจาก index.js — ทุก event ผ่านที่นี่ */
-export async function handleEvent(event) {
+export async function handleEvent(event, { durable = false, imageResults = null } = {}) {
+  if (event.source?.type && event.source.type !== "user") return;
+  if (durable) event._durable = true;
   const userId = event.source?.userId;
 
   // --- ควบคุมสิทธิ์ใช้งาน ---
@@ -2053,7 +2074,7 @@ export async function handleEvent(event) {
   const heavy = event.type === "message" &&
     (event.message?.type === "image" || event.message?.type === "file");
   const kind = heavy ? "image" : "msg";
-  const rl = take(userId, kind);
+  const rl = eventValue(L.db(), -1, () => take(userId, kind));
   if (!rl.ok) {
     // เพิ่งเตือนไปเมื่อกี้ → เงียบ (ดู `quiet` ใน ratelimit.js)
     // ส่งรูปเกินโควตาทีเดียวหลายใบไม่ควรได้การ์ดเตือนใบต่อใบ
@@ -2068,10 +2089,19 @@ export async function handleEvent(event) {
     }));
   }
 
+  if (await handleFinance(event,{respond,downloadContent})) return;
+
   if (event.type === "postback") return withAlerts(handlePostback);
   if (event.type !== "message") return;
 
-  if (event.message.type === "image") return handleImage(event);
+  if (event.message.type === "image") {
+    if (imageResults) {
+      if (!L.hasConsent(userId)) return respond(event,consentCard());
+      imageResults.push(await processSlip(userId,event));
+      return;
+    }
+    return durable ? handleSingleImage(event) : handleImage(event);
+  }
   if (event.message.type === "file") return withAlerts(handleFile);
   if (event.message.type === "text") return withAlerts(handleText);
 
@@ -2080,4 +2110,24 @@ export async function handleEvent(event) {
     text: "ส่งรูปสลิป ไฟล์ PDF/CSV หรือพิมพ์รายการเข้ามาได้เลยครับ",
     actions: [{ label: "❓ วิธีใช้", text: "ช่วยเหลือ" }],
   }));
+}
+
+// The inbox owns batching in production; each source event retains its own replay context.
+export async function handleDurableImageBatch(events) {
+  const { withEvent } = await import("./replay.js");
+  const { eventKey } = await import("./inbox.js");
+
+  // Capture attachment routing for the entire selection before the first file consumes the intent.
+  for (const event of events) await withEvent(eventKey(event), () =>
+    eventValue(L.db(), -2, () => evidence.attachmentIntent(event.source.userId)?.txn_id ?? null));
+  const results=[];
+  for (const event of events) {
+    await withEvent(eventKey(event), () => handleEvent(event,{durable:true,imageResults:results}));
+  }
+  if (!results.length) return;
+  const saved=results.filter(r=>r.kind==="saved").map(r=>r.rec);
+  const skipped=results.filter(r=>r.kind==="skip").map(r=>SLIP_SKIP[r.reason]??r.reason);
+  const dup=results.filter(r=>r.kind==="dup").length;
+  await respond(events.at(-1),batchSlipCard(events[0].source.userId,events.length,saved,skipped,dup));
+  await notifyAfter(events[0].source.userId);
 }
