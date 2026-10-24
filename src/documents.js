@@ -150,7 +150,7 @@ function snapshotFor(userId, input) {
   return {
     issuer,
     customer: {
-      name: clean(input.customer?.name, 120),
+      name: clean(input.customer?.name, 120, "ชื่อลูกค้า"),
       address: (input.customer?.address || "").slice(0, 500),
     },
     items,
@@ -253,8 +253,8 @@ export function cancelDocument(u, id) {
       .run(new Date().toISOString(), u, id).changes > 0
   );
 }
-export function receiptForTransaction(u, id, customer) {
-  const t = L.getTxn(u, id);
+export function receiptTransaction(userId, id) {
+  const t = L.getTxn(userId, id);
   if (
     !t ||
     t.direction !== "in" ||
@@ -262,16 +262,35 @@ export function receiptForTransaction(u, id, customer) {
     t.currency !== "THB"
   )
     throw new UserError("เลือกเฉพาะรายรับ THB ที่ยืนยันแล้ว");
-  return createDraft(u, {
-    kind: "receipt",
-    customer: { name: customer },
-    txnId: id,
-    items: [
-      {
-        name: t.note || t.counterparty || `รับชำระรายการ #${id}`,
-        quantity: 1,
-        unitCents: t.amount_cents,
-      },
-    ],
-  });
+  return t;
+}
+export function receiptForEntry(userId, id) {
+  const row = L.db()
+    .prepare(
+      `SELECT id FROM documents WHERE line_user_id=? AND txn_id=?
+    AND kind='receipt' AND status IN ('draft','issued') ORDER BY CASE status WHEN 'issued' THEN 0 ELSE 1 END,id DESC LIMIT 1`,
+    )
+    .get(userId, id);
+  return row ? getDocument(userId, row.id) : null;
+}
+export function receiptForTransaction(u, id, customer) {
+  return replayWrite(L.db(), () =>
+    atomic(L.db(), () => {
+      const t = receiptTransaction(u, id);
+      const existing = receiptForEntry(u, id);
+      if (existing) return existing;
+      return createDraft(u, {
+        kind: "receipt",
+        customer: { name: customer },
+        txnId: id,
+        items: [
+          {
+            name: t.note || t.counterparty || `รับชำระรายการ #${id}`,
+            quantity: 1,
+            unitCents: t.amount_cents,
+          },
+        ],
+      });
+    }),
+  );
 }

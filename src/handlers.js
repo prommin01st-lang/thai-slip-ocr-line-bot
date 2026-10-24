@@ -21,7 +21,7 @@ import { take } from "./ratelimit.js";
 import { collect } from "./batch.js";
 import { resultMessage, errorMessage, card, askDirection, askPeriod, thaiMonth,
          summaryBubble, txnListBubble, categoryButtons, categoryPickerBubble,
-         shiftMonth, sheetGuideMessage } from "./flex.js";
+         shiftMonth, sheetGuideMessage, receiptActions } from "./flex.js";
 import { labelOf, isCategory } from "./categories.js";
 import { parseSheetId } from "./sheets.js";
 import { syncNow, buildDashboard } from "./sheetSync.js";
@@ -116,6 +116,7 @@ export function entriesCard(saved, skipped = []) {
       : [],
     text: "ยังไม่ได้จัดหมวด — กดดูรายการแล้วเลือกหมวดได้ทีละรายการ",
     actions: [
+      ...saved.filter(s=>s.direction==="in" && s.status==="confirmed").slice(0,3).flatMap(s=>receiptActions({...s,currency:"THB"},`🧾 ใบเสร็จ #${s.txnId}`)),
       ...(uncategorised
         ? [{ label: "📂 จัดหมวดที่ค้าง", data: "act=list&c=-", primary: true }]
         : [{ label: "🧾 ดูรายการ", data: "act=list", primary: true }]),
@@ -456,7 +457,7 @@ function periodAskIfNeeded(userId, txnId) {
 
 // ---------- รูปสลิป ----------
 
-function savedCard(rec, amount, occurredAt, category = null) {
+function savedCard(rec, amount, occurredAt, category = null, currency = "THB") {
   if (rec.ok) {
     const pending = rec.status === "pending";
     // ต้องโชว์วันที่ที่ลงบัญชี — สลิปใช้วันที่บนใบ ซึ่งมักเป็นเดือนก่อน
@@ -473,6 +474,7 @@ function savedCard(rec, amount, occurredAt, category = null) {
       big: amount, bigLabel: DIR_LABEL[rec.direction],
       notes: pending ? [`ยังไม่มั่นใจว่าอ่านยอดถูก — แก้ได้ด้วย “แก้ ${rec.txnId} <ยอด>”`] : [],
       actions: [
+        ...receiptActions({...rec,currency}),
         ...(rec.direction === "unknown"
           ? [{ label: "💰 เป็นรายรับ", data: `act=dir&id=${rec.txnId}&v=in`, primary: true },
              { label: "💸 เป็นรายจ่าย", data: `act=dir&id=${rec.txnId}&v=out` }]
@@ -556,7 +558,7 @@ async function handleSingleImage(event) {
         messages.push(askDirection(rec.txnId, result.amount));
       } else {
         messages.push(savedCard(rec, result.amount, L.occurredAt(result),
-                                L.getTxn(userId, rec.txnId)?.category ?? null));
+                                L.getTxn(userId, rec.txnId)?.category ?? null, result.currency || "THB"));
         const ask = rec.ok ? periodAskIfNeeded(userId, rec.txnId) : null;
         if (ask) messages.push(ask);
       }
@@ -705,6 +707,7 @@ export function batchSlipCard(userId, total, saved, skipped, dup) {
       ...(pending.length ? [`ควรตรวจยอด ${pending.length} ใบ`] : []),
     ],
     actions: [
+      ...saved.map(rec=>L.getTxn(userId,rec.txnId)).filter(t=>receiptActions(t).length).slice(0,3).flatMap(t=>receiptActions(t,`🧾 ใบเสร็จ #${t.id}`)),
       ...(unknown.length
         ? [{ label: `💬 ระบุรับ/จ่าย (${unknown.length} ใบ)`,
              data: `act=askdir&id=${unknown[0].txnId}`, primary: true }]
@@ -1399,6 +1402,7 @@ async function handlePostback(event) {
       ],
       text: left ? "ยังมีรายการที่ต้องตรวจอยู่" : "ตรวจครบทุกรายการแล้ว",
       actions: [
+        ...receiptActions(t),
         left
           ? { label: "📝 ดูที่เหลือ", data: "act=list&s=pending", primary: true }
           : { label: "🧾 กลับไปรายการ", data: "act=list", primary: true },
@@ -1531,6 +1535,7 @@ async function handlePostback(event) {
         ? "จำบัญชีคุณไว้แล้ว ครั้งต่อไปไม่ต้องถามอีก\n(ถ้าเดาผิด กด “ตั้งค่า” แล้วลืมบัญชีที่จำไว้ได้)"
         : undefined,
       actions: [
+        ...receiptActions(t),
         // ต้องกลับได้เสมอ — กดผิดปุ่มเดียวแล้วยอดไปอยู่ผิดฝั่งทั้งสรุปทั้งงบ
         { label: v === "in" ? "🔁 ที่จริงเป็นรายจ่าย" : "🔁 ที่จริงเป็นรายรับ",
           data: `act=dir&id=${id}&v=${v === "in" ? "out" : "in"}` },
@@ -1999,6 +2004,7 @@ async function handleText(event) {
           ].filter(Boolean),
           // เดาเอง → ให้ปุ่มแก้ทันที ดีกว่าบอกให้พิมพ์ใหม่
           actions: [
+            ...receiptActions({...rec,currency:"THB"}),
             ...(entry.guessed
               ? [{ label: "💰 เปลี่ยนเป็นรายรับ", data: `act=dir&id=${rec.txnId}&v=in`, primary: true },
                  { label: "💸 ยืนยันเป็นรายจ่าย", data: `act=dir&id=${rec.txnId}&v=out` }]

@@ -311,3 +311,11 @@ replacement document text. Documents are general invoices/receipts, not tax invo
 
 See [production readiness and recovery](docs/PRODUCTION.md) for env checks, private storage,
 durable jobs, backups and the phase-6 deployment checklist.
+
+After recording a **confirmed THB income**, press **ออกใบเสร็จ** on the saved card
+or recent transaction. Enter the customer's full name (spaces are allowed), review
+the linked draft PDF, then confirm issue. The original amount is reused and the
+ledger is not incremented. Clicking again opens the existing active draft/receipt;
+cancel that document first if a replacement is required. If issuer details are
+missing, complete setup and return using the continuation button on the receipt card.
+Expenses use **หลักฐาน** to attach a receipt file instead of issuing an income receipt.

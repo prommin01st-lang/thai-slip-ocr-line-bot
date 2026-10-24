@@ -476,6 +476,12 @@ export function sheetGuideMessage({ mascotUrl = null, email = null } = {}) {
   };
 }
 
+/** Receipts use confirmed THB income; opening a draft never adds a ledger transaction. */
+export function receiptActions(txn, label = "🧾 ออกใบเสร็จ") {
+  return txn?.direction === "in" && txn.status === "confirmed" && txn.currency === "THB"
+    ? [{label,data:`act=txnreceipt&id=${txn.id ?? txn.txnId}`,primary:true}] : [];
+}
+
 /** ปุ่มจัดการรายการที่เพิ่งบันทึก */
 export function txnActions(txnId, text) {
   return {
@@ -866,6 +872,7 @@ export function txnListBubble(rows, fromCents, filter = {}) {
             { type: "box", layout: "horizontal", flex: 5, spacing: "xs", contents: acts },
           ],
         },
+        ...receiptActions(t).map(a => ({type:"button",height:"sm",style:"link",action:{type:"postback",label:a.label,data:a.data}})),
         { type: "separator", margin: "md" },
       ],
     };

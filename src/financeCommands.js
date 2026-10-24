@@ -1,3 +1,4 @@
+import * as receiptSetup from "./receiptSetup.js";
 import * as issuerSetup from "./issuerSetup.js";
 import { UserError } from "./errors.js";
 import { config } from "./config.js";
@@ -16,6 +17,9 @@ function documentCard(u, doc) {
     text: `#${doc.id} · ${doc.number || "ฉบับร่าง"} · ${doc.status}`,
     rows: [
       { label: "ลูกค้า", value: doc.snapshot.customer.name },
+      ...(doc.txn_id
+        ? [{ label: "อ้างอิงรายรับ", value: `#${doc.txn_id}` }]
+        : []),
       {
         label: "ยอดสุทธิ",
         value: `${L.fromCents(doc.snapshot.totalCents)} บาท`,
@@ -103,6 +107,54 @@ export function evidenceCard(u, id, page = 0) {
     ),
   ];
 }
+export function receiptCustomerCard(userId, intent, error = null) {
+  const t = L.getTxn(userId, intent.txnId);
+  const cancel = { label: "ยกเลิก", data: `act=receiptcancel&f=${intent.id}` };
+  if (
+    !t ||
+    t.direction !== "in" ||
+    t.status !== "confirmed" ||
+    t.currency !== "THB"
+  )
+    return card({
+      title: "รายการนี้ยังออกใบเสร็จไม่ได้",
+      emoji: "🧾",
+      tone: "warn",
+      text: "เลือกเฉพาะรายรับ THB ที่ยืนยันแล้ว",
+      actions: [{ label: "ดูรายการ", data: "act=list" }, cancel],
+    });
+  return card({
+    title: `ใบเสร็จจากรายรับ #${t.id}`,
+    emoji: "🧾",
+    tone: error ? "warn" : "info",
+    text: "พิมพ์ชื่อลูกค้าหรือผู้ชำระเงินได้เลย เช่น สมชาย ใจดี ระบบจะดึงยอดจากรายการนี้มาสร้างร่าง PDF",
+    rows: [
+      { label: "ยอดรับเงิน", value: `${L.fromCents(t.amount_cents)} บาท` },
+      { label: "รายการ", value: t.note || t.counterparty || `#${t.id}` },
+      {
+        label: "ผู้ออก",
+        value: D.getIssuer(userId)?.name || "ยังไม่ได้ตั้งค่า",
+      },
+    ],
+    notes: [
+      ...(error ? [error] : []),
+      "ไม่เพิ่มยอดบัญชีซ้ำ ตรวจร่างและยืนยันก่อนออกเลขเอกสาร",
+      "รอชื่อลูกค้า 10 นาที",
+    ],
+    actions: [
+      ...(t.counterparty && t.counterparty.length <= 120
+        ? [
+            {
+              label: "ใช้ชื่อจากรายการ",
+              data: `act=receiptparty&f=${intent.id}`,
+            },
+          ]
+        : []),
+      cancel,
+    ],
+  });
+}
+
 export function issuerCard(userId, { saved = false } = {}) {
   const issuer = D.getIssuer(userId);
   return card({
@@ -248,6 +300,10 @@ export async function handleFinance(event, { respond, downloadContent }) {
       ? eventValue(L.db(), -2, () => E.attachmentIntent(u)?.txn_id ?? null)
       : null;
   const draft = eventValue(L.db(), -3, () => issuerSetup.getDraft(u));
+  const receiptIntent = eventValue(L.db(), -4, () => receiptSetup.getIntent(u));
+  const receiptAct = ["txnreceipt", "receiptcancel", "receiptparty"].includes(
+    act,
+  );
   const issuerActs = [
     "issuersave",
     "issuerback",
@@ -282,11 +338,139 @@ export async function handleFinance(event, { respond, downloadContent }) {
     !docAct &&
     !settingsAct &&
     !command &&
-    !draft
+    !draft &&
+    !receiptAct &&
+    !receiptIntent
   )
     return false;
   try {
     if (!L.hasConsent(u)) throw new UserError("กรุณาพิมพ์ “ยินยอม” ก่อนใช้งาน");
+    if (act === "txnreceipt") {
+      const transaction = D.receiptTransaction(u, id);
+      if (draft) issuerSetup.cancel(u, draft.id);
+      if (receiptIntent) receiptSetup.cancel(u, receiptIntent.id);
+      const existing = D.receiptForEntry(u, id);
+      if (existing) {
+        await respond(event, documentCard(u, existing));
+        return true;
+      }
+      if (!D.getIssuer(u)) {
+        await respond(event, [
+          card({
+            title: `ตั้งผู้ออกก่อนออกใบเสร็จ #${id}`,
+            emoji: "🧾",
+            tone: "info",
+            text: "ตั้งข้อมูลผู้ออกเอกสารให้เรียบร้อย แล้วกดต่อใบเสร็จจากการ์ดนี้ ยอดรับเงินเดิมยังอยู่ครบ",
+            rows: [
+              {
+                label: "ยอดรับเงิน",
+                value: `${L.fromCents(transaction.amount_cents)} บาท`,
+              },
+            ],
+            actions: [
+              {
+                label: "ตั้งข้อมูลผู้ออก",
+                data: "act=issueredit",
+                primary: true,
+              },
+              { label: `ต่อใบเสร็จ #${id}`, data: `act=txnreceipt&id=${id}` },
+            ],
+          }),
+          issuerCard(u),
+        ]);
+        return true;
+      }
+      await respond(event, receiptCustomerCard(u, receiptSetup.begin(u, id)));
+      return true;
+    }
+    if (act === "receiptcancel") {
+      if (!p.get("f") || !receiptSetup.cancel(u, p.get("f")))
+        throw new UserError(
+          "คำขอเดิมหมดอายุ กดออกใบเสร็จจากรายการอีกครั้งครับ",
+        );
+      await respond(
+        event,
+        card({
+          title: "ยกเลิกการสร้างใบเสร็จแล้ว",
+          emoji: "🧾",
+          text: "รายการรับเงินเดิมยังอยู่ครบ",
+          actions: [{ label: "ดูรายการ", data: "act=list" }],
+        }),
+      );
+      return true;
+    }
+    if (act === "receiptparty") {
+      if (!receiptIntent || receiptIntent.id !== p.get("f"))
+        throw new UserError("คำขอเดิมหมดอายุ กดออกใบเสร็จอีกครั้งครับ");
+      const t = D.receiptTransaction(u, receiptIntent.txnId);
+      if (!t.counterparty)
+        throw new UserError("ไม่พบชื่อลูกค้า กรุณาพิมพ์ชื่อได้เลยครับ");
+      await respond(
+        event,
+        documentCard(
+          u,
+          receiptSetup.complete(u, receiptIntent, t.counterparty),
+        ),
+      );
+      return true;
+    }
+    if (receiptIntent) {
+      const nav =
+        /^(ตั้งค่า|settings|ช่วยเหลือ|help|บิล|ใบเสร็จ|บิลและใบเสร็จ|เอกสาร|ข้อมูลของฉัน|ลบข้อมูลของฉัน|สรุป|รายการ|ผู้ออก|ข้อมูลผู้ออก(?:เอกสาร)?)$/i.test(
+          text,
+        );
+      const legacy = /^ใบเสร็จ\s+#(\d+)\s+(.+)$/.exec(text);
+      const leaving =
+        act ||
+        nav ||
+        (/^ผู้ออก\s/.test(text) && text.includes("|")) ||
+        (legacy && Number(legacy[1]) !== receiptIntent.txnId);
+      if (leaving) {
+        receiptSetup.cancel(u, receiptIntent.id);
+        if (
+          !target &&
+          !attachmentAct &&
+          !docAct &&
+          !settingsAct &&
+          !command &&
+          !draft
+        )
+          return false;
+      } else if (!draft) {
+        if (/^(ยกเลิก|cancel)$/i.test(text)) {
+          receiptSetup.cancel(u, receiptIntent.id);
+          await respond(
+            event,
+            card({
+              title: "ยกเลิกการสร้างใบเสร็จแล้ว",
+              emoji: "🧾",
+              text: "ยอดบัญชีเดิมไม่เปลี่ยน",
+              actions: [{ label: "ดูรายการ", data: "act=list" }],
+            }),
+          );
+          return true;
+        }
+        if (event.message?.type !== "text") {
+          await respond(
+            event,
+            receiptCustomerCard(
+              u,
+              receiptIntent,
+              "กรุณาพิมพ์ชื่อลูกค้า หรือกดยกเลิกก่อนแนบไฟล์",
+            ),
+          );
+          return true;
+        }
+        await respond(
+          event,
+          documentCard(
+            u,
+            receiptSetup.complete(u, receiptIntent, legacy ? legacy[2] : text),
+          ),
+        );
+        return true;
+      }
+    }
     if (act === "issueredit") {
       await respond(event, issuerWizardCard(issuerSetup.begin(u)));
       return true;
@@ -575,6 +759,11 @@ export async function handleFinance(event, { respond, downloadContent }) {
     return true;
   } catch (err) {
     if (!(err instanceof UserError) && event._durable) throw err;
+    const activeReceipt = receiptSetup.getIntent(u);
+    if (activeReceipt && err instanceof UserError) {
+      await respond(event, receiptCustomerCard(u, activeReceipt, err.message));
+      return true;
+    }
     const activeDraft = issuerSetup.getDraft(u);
     if (activeDraft && err instanceof UserError) {
       await respond(event, issuerWizardCard(activeDraft, err.message));
