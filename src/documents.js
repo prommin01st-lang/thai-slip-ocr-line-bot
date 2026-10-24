@@ -13,6 +13,14 @@ const clean = (s, max = 500) => {
     throw new UserError("ข้อความว่าง ยาวเกิน หรือมีอักขระที่ใช้ไม่ได้");
   return s.trim();
 };
+export function getIssuer(userId) {
+  try {
+    return JSON.parse(L.getPref(userId, "document_issuer") || "null");
+  } catch {
+    return null;
+  }
+}
+
 export function setIssuer(userId, text) {
   if (!L.hasConsent(userId)) throw new UserError("กรุณาให้ความยินยอมก่อน");
   const [name, address, phone = ""] = text.split("|").map((s) => s.trim());
@@ -65,7 +73,7 @@ export function parseDocument(text) {
 }
 function snapshotFor(userId, input) {
   if (!L.hasConsent(userId)) throw new UserError("กรุณาให้ความยินยอมก่อน");
-  const issuer = JSON.parse(L.getPref(userId, "document_issuer") || "null");
+  const issuer = getIssuer(userId);
   if (!issuer)
     throw new UserError("ตั้งข้อมูลผู้ออกก่อน: ผู้ออก ชื่อ | ที่อยู่ | โทร");
   if (

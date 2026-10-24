@@ -102,12 +102,90 @@ export function evidenceCard(u, id, page = 0) {
     ),
   ];
 }
-const help = () =>
+const issuerFill = (userId) => {
+  const issuer = D.getIssuer(userId);
+  const existing = issuer
+    ? `ผู้ออก ${issuer.name} | ${issuer.address} | ${issuer.phone || ""}`
+    : "ผู้ออก ";
+  return existing.length <= 300 ? existing : "ผู้ออก ";
+};
+export function issuerCard(userId, { editing = false, saved = false } = {}) {
+  const issuer = D.getIssuer(userId);
+  return card({
+    title: saved ? "บันทึกข้อมูลผู้ออกแล้ว" : "ข้อมูลผู้ออกเอกสาร",
+    emoji: saved ? "✅" : "🏢",
+    tone: saved ? "success" : "info",
+    text: editing
+      ? "แก้ข้อความในช่องพิมพ์ แล้วกดส่งเพื่อบันทึก\nใช้รูปแบบ: ผู้ออก ชื่อร้าน | ที่อยู่ | โทรศัพท์"
+      : issuer
+        ? "ข้อมูลนี้จะใช้กับเอกสารฉบับใหม่ เอกสารที่ออกแล้วจะคงข้อมูลเดิม"
+        : "ยังไม่ได้ตั้งข้อมูลผู้ออก กดกรอกข้อมูลด้านล่างได้เลยครับ",
+    rows: issuer
+      ? [
+          { label: "ชื่อร้าน/บริษัท", value: issuer.name },
+          { label: "ที่อยู่", value: issuer.address },
+          { label: "โทรศัพท์", value: issuer.phone || "ไม่ระบุ" },
+        ]
+      : [],
+    notes: editing
+      ? [
+          "ตัวอย่าง: ผู้ออก ร้านตัวอย่าง | 123 ถนนสุขุมวิท กรุงเทพฯ | 0812345678",
+          "ต้องมีชื่อและที่อยู่ โทรศัพท์เว้นว่างได้",
+        ]
+      : [],
+    actions: [
+      {
+        label: issuer ? "แก้ไขข้อมูล" : "กรอกข้อมูลผู้ออก",
+        data: "act=issueredit",
+        fill: issuerFill(userId),
+        primary: true,
+      },
+      { label: "บิลและใบเสร็จ", data: "act=billing" },
+      { label: "กลับตั้งค่า", data: "act=settings" },
+    ],
+  });
+}
+
+export const billingCard = (userId, { guide = false } = {}) =>
   card({
     title: "บิลและใบเสร็จ",
     emoji: "🧾",
     tone: "info",
-    text: "ตั้งผู้ออกครั้งแรก:\nผู้ออก ร้านตัวอย่าง | ที่อยู่ | โทร\n\nสร้างฉบับร่าง:\nบิล ชื่อลูกค้า | ที่อยู่ลูกค้า\nสินค้า | 2 | 100\nส่วนลด | 10\nหมายเหตุ | ชำระภายใน 7 วัน\n\nใช้คำว่า “ใบเสร็จ” แทน “บิล” ได้\nผูกใบเสร็จกับรายรับ: ใบเสร็จ #12 ชื่อลูกค้า\nแก้ร่าง: แก้เอกสาร #รหัส แล้วขึ้นบรรทัดใหม่ใส่ข้อมูลเต็มชุด\nดูย้อนหลัง: เอกสาร",
+    text: guide
+      ? "ตั้งผู้ออกครั้งแรก:\nผู้ออก ร้านตัวอย่าง | ที่อยู่ | โทร\n\nสร้างฉบับร่าง:\nบิล ชื่อลูกค้า | ที่อยู่ลูกค้า\nสินค้า | 2 | 100\nส่วนลด | 10\nหมายเหตุ | ชำระภายใน 7 วัน\n\nใช้คำว่า “ใบเสร็จ” แทน “บิล” ได้\nผูกใบเสร็จกับรายรับ: ใบเสร็จ #12 ชื่อลูกค้า\nแก้ร่าง: แก้เอกสาร #รหัส แล้วขึ้นบรรทัดใหม่ใส่ข้อมูลเต็มชุด\nดูย้อนหลัง: เอกสาร"
+      : "ตั้งข้อมูลผู้ออก แล้วเลือกสร้างบิลหรือใบเสร็จ ตรวจร่าง PDF ก่อนกดยืนยันออกเอกสาร",
+
+    rows: [
+      {
+        label: "ผู้ออกเอกสาร",
+        value: D.getIssuer(userId)?.name || "ยังไม่ได้ตั้งค่า",
+      },
+    ],
+    actions: [
+      {
+        label: D.getIssuer(userId) ? "ข้อมูลผู้ออกเอกสาร" : "ตั้งค่าผู้ออก",
+        data: "act=issuer",
+        primary: !D.getIssuer(userId),
+      },
+      ...(D.getIssuer(userId)
+        ? [
+            {
+              label: "สร้างบิล",
+              data: "act=billprompt",
+              fill: "บิล ชื่อลูกค้า | ที่อยู่ลูกค้า\nค่าบริการ | 1 | 1000",
+              primary: true,
+            },
+            {
+              label: "สร้างใบเสร็จ",
+              data: "act=receiptprompt",
+              fill: "ใบเสร็จ ชื่อลูกค้า | ที่อยู่ลูกค้า\nค่าบริการ | 1 | 1000",
+            },
+          ]
+        : []),
+      { label: "เอกสารของฉัน", text: "เอกสาร" },
+      ...(!guide ? [{ label: "วิธีกรอกเอกสาร", data: "act=billinghelp" }] : []),
+      { label: "กลับตั้งค่า", data: "act=settings" },
+    ],
     notes: [
       "เอกสารทั่วไป ไม่ใช่ใบกำกับภาษี",
       "จำนวนสินค้าเป็นจำนวนเต็ม ราคาเป็นบาท รองรับสตางค์",
@@ -136,13 +214,59 @@ export async function handleFinance(event, { respond, downloadContent }) {
     "attachcancel",
   ].includes(act);
   const docAct = ["doc", "docissue", "doccancelask", "doccancel"].includes(act);
+  const settingsAct = [
+    "issuer",
+    "issueredit",
+    "billing",
+    "billinghelp",
+    "billprompt",
+    "receiptprompt",
+  ].includes(act);
   const command =
-    /^(ผู้ออก\s|บิล(?:\s|$)|ใบเสร็จ(?:\s|$)|เอกสาร(?:\s|$)|แก้เอกสาร\s|แนบหลักฐาน\s|หลักฐาน\s|ยกเลิกแนบ$|เก็บต้นฉบับ(?:\s|$))/.test(
+    /^(ผู้ออก(?:\s|$)|ข้อมูลผู้ออก(?:เอกสาร)?$|ตั้งค่าผู้ออก(?:เอกสาร)?$|บิลและใบเสร็จ$|บิล(?:\s|$)|ใบเสร็จ(?:\s|$)|เอกสาร(?:\s|$)|แก้เอกสาร\s|แนบหลักฐาน\s|หลักฐาน\s|ยกเลิกแนบ$|เก็บต้นฉบับ(?:\s|$))/.test(
       text,
     );
-  if (!target && !attachmentAct && !docAct && !command) return false;
+  if (!target && !attachmentAct && !docAct && !settingsAct && !command)
+    return false;
   try {
     if (!L.hasConsent(u)) throw new UserError("กรุณาพิมพ์ “ยินยอม” ก่อนใช้งาน");
+    if (
+      act === "issuer" ||
+      act === "issueredit" ||
+      /^(ผู้ออก|ข้อมูลผู้ออก(?:เอกสาร)?|ตั้งค่าผู้ออก(?:เอกสาร)?)$/.test(text)
+    ) {
+      await respond(event, issuerCard(u, { editing: act === "issueredit" }));
+      return true;
+    }
+    if (
+      act === "billing" ||
+      act === "billinghelp" ||
+      text === "บิลและใบเสร็จ"
+    ) {
+      await respond(event, billingCard(u, { guide: act === "billinghelp" }));
+      return true;
+    }
+    if (act === "billprompt" || act === "receiptprompt") {
+      if (!D.getIssuer(u)) {
+        await respond(event, issuerCard(u));
+        return true;
+      }
+      await respond(
+        event,
+        card({
+          title: act === "billprompt" ? "สร้างร่างบิล" : "สร้างร่างใบเสร็จ",
+          emoji: "🧾",
+          tone: "info",
+          text: "เติมตัวอย่างไว้ในช่องพิมพ์แล้ว แก้ชื่อลูกค้า รายการ จำนวน และราคา แล้วกดส่งเพื่อดูร่าง PDF",
+          notes: ["ยังไม่ออกเลขเอกสารจนกว่าจะกดยืนยัน"],
+          actions: [
+            { label: "ข้อมูลผู้ออกเอกสาร", data: "act=issuer" },
+            { label: "กลับเมนูเอกสาร", data: "act=billing" },
+          ],
+        }),
+      );
+      return true;
+    }
     if (target) {
       if (!config.evidenceEnabled)
         throw new UserError("ยังไม่ได้เปิดพื้นที่เก็บหลักฐาน");
@@ -247,14 +371,11 @@ export async function handleFinance(event, { respond, downloadContent }) {
     }
     if (/^ผู้ออก\s/.test(text)) {
       D.setIssuer(u, text.replace(/^ผู้ออก\s+/, ""));
-      await respond(
-        event,
-        card({ title: "บันทึกข้อมูลผู้ออกแล้ว", emoji: "✅" }),
-      );
+      await respond(event, issuerCard(u, { saved: true }));
       return true;
     }
     if (text === "บิล" || text === "ใบเสร็จ") {
-      await respond(event, help());
+      await respond(event, billingCard(u));
       return true;
     }
     if (/^เอกสาร\s+#?\d+$/.test(text)) {
@@ -279,7 +400,7 @@ export async function handleFinance(event, { respond, downloadContent }) {
                 data: `act=doc&id=${d.id}`,
               })),
             })
-          : help(),
+          : billingCard(u),
       );
       return true;
     }

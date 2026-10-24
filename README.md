@@ -286,6 +286,12 @@ within ten minutes. This attaches to transaction #12 without increasing its amou
 Use `เก็บต้นฉบับ เปิด` to explicitly retain future slip originals, or `เก็บต้นฉบับ ปิด`
 to stop. Older images cannot be recovered if they were not stored at the time.
 
+In LINE, type `ตั้งค่า` → **ข้อมูลผู้ออก** to view/add/edit issuer details, or
+**บิลและใบเสร็จ** to create documents. The editor opens the keyboard and pre-fills
+existing values when short enough; sending the edited message saves the profile.
+Newly saved issuer details affect future documents only. Reopen `ตั้งค่า` to see
+updated controls; older cards in chat keep their original layout.
+
 Set an issuer with `ผู้ออก ร้านตัวอย่าง | ที่อยู่ | โทร`, then send:
 
 ```text

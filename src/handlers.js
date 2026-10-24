@@ -1,3 +1,4 @@
+import { getIssuer } from "./documents.js";
 import { UserError } from "./errors.js";
 import { replayWrite, eventValue } from "./replay.js";
 import { handleFinance } from "./financeCommands.js";
@@ -56,6 +57,7 @@ const helpCard = () => card({
     { label: "📊 สรุปเดือนนี้", data: "act=summary", primary: true },
     { label: "🧾 รายการล่าสุด", data: "act=list" },
     { label: "⚙️ ตั้งค่า", data: "act=settings" },
+    { label: "🧾 บิลและใบเสร็จ", data: "act=billing" },
   ],
   altText: "วิธีใช้ SlipingMan",
 });
@@ -206,9 +208,11 @@ const settingsCard = (userId) => {
   const weeklyOn = L.getPref(userId, "weekly") === "on";
   const bs = L.getBudgets(userId);
   const accts = L.getAccounts(userId);
+  const issuer = getIssuer(userId);
   return card({
     title: "ตั้งค่า", emoji: "⚙️", tone: "neutral",
     rows: [
+      { label: "ผู้ออกเอกสาร", value: issuer?.name || "ยังไม่ได้ตั้งค่า" },
       { label: "สรุปรายสัปดาห์", value: weeklyOn ? "เปิด" : "ปิด" },
       { label: "งบที่ตั้งไว้", value: bs.length ? `${bs.length} รายการ` : "ยังไม่ได้ตั้ง" },
       // ต้องโชว์ — นี่คือสิ่งที่ระบบใช้ตัดสินว่าสลิปใบไหนรับ/จ่าย โดยไม่ถามอีก
@@ -225,6 +229,8 @@ const settingsCard = (userId) => {
       }] : []),
     ],
     actions: [
+      { label: "🏢 ข้อมูลผู้ออก", data: "act=issuer", primary: !issuer },
+      { label: "🧾 บิลและใบเสร็จ", data: "act=billing" },
       { label: weeklyOn ? "🔕 ปิดสรุปรายสัปดาห์" : "🔔 เปิดสรุปรายสัปดาห์", data: "act=weekly" },
       ...(accts.length ? [{ label: "🔄 ลืมบัญชีที่จำไว้", data: "act=forgetacct" }] : []),
       // fillInText: เติม "งบ " ให้ ผู้ใช้พิมพ์ต่อแค่ตัวเลข
