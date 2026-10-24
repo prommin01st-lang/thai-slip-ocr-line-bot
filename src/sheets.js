@@ -73,6 +73,13 @@ async function accessToken() {
   return cached.token;
 }
 
+/** Validate the account without returning its OAuth token to callers or logs. */
+export async function checkCredentials() {
+  const token = await accessToken();
+  if (!token) throw new SheetError("Google did not return an access token");
+  return true;
+}
+
 /** ใช้ในเทส — ยัด token ปลอมเข้าไปจะได้ไม่ต้องมีคีย์จริง */
 export function _setToken(token, ttlMs = 3600_000) {
   cached = { token, expMs: Date.now() + ttlMs };

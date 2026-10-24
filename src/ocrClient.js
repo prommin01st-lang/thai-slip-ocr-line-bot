@@ -1,3 +1,4 @@
+import { normalizeDocument } from "./ocrDocument.js";
 // ocrClient.js — คุยกับ slip-ocr-th/serve.py (:8100)
 //
 // ฝั่งนั้นโหลด Unlimited-OCR 4-bit ค้างไว้ ~2.2GB VRAM และ serialize GPU ด้วย worker เดียว
@@ -49,7 +50,8 @@ async function post(path, body, timeoutMs) {
       "backend ปฏิเสธ token — ตรวจว่า OCR_TOKEN ตรงกับ SLIP_OCR_TOKEN ฝั่ง backend");
   }
   if (!res.ok) throw new Error(data.error || `backend ตอบ ${res.status}`);
-  return data;
+  if (Array.isArray(data.pages)) return {...data, pages:data.pages.map(p => normalizeDocument(p))};
+  return normalizeDocument(data, {"/slip":"transfer","/payslip":"payslip","/receipt":"receipt"}[path]);
 }
 
 /**

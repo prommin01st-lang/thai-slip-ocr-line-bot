@@ -1,3 +1,4 @@
+import { normalizeDocument } from "./ocrDocument.js";
 import { atomic } from "./db.js";
 import { replayWrite } from "./replay.js";
 // ledger.js — ตรรกะสมุดบัญชี: ยินยอม → กันซ้ำ → ตัดสินทิศทาง → บันทึก → สรุป
@@ -274,9 +275,10 @@ export function findDuplicate(userId, { imageSha256 = null, ref = null, parsed =
     if (hit) return { layer: "ref", slip: hit, txn: hit, txnId: hit.txn_id_ };
   }
   if (parsed) {
+    parsed = normalizeDocument(parsed);
     const cents = toCents(parsed.amount);
     const at = occurredAt(parsed);
-    if (cents !== null && at) {
+    if (cents !== null && at && (!["receipt", "payslip"].includes(parsed.doc_type) || parsed.time)) {
       // หน้าต่าง ±2 นาที — เทียบเป็นสตริงไม่ได้ ต้องให้ SQLite คิดเวลาให้
       const hit = d.prepare(`
         SELECT t.* FROM txns t
@@ -304,6 +306,7 @@ export function recordSlip(userId, parsed, { imageSha256 = null, direction = nul
   return replayWrite(db(), () => atomic(db(), () => {
   if (!hasConsent(userId)) return { ok: false, reason: "no_consent" };
 
+  parsed = normalizeDocument(parsed);
   const cents = toCents(parsed.amount);
   if (cents === null) return { ok: false, reason: "no_amount" };
   if (parsed.confidence === "low") return { ok: false, reason: "low_confidence" };

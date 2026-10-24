@@ -76,14 +76,15 @@ if (process.argv.includes("--online") && !result.errors.length) {
       },
     ]);
   if (e.GOOGLE_SA_EMAIL) {
-    checks.push([
-      "Google Sheets read access",
-      async () => {
-        if (!e.CHECK_SPREADSHEET_ID) throw new Error();
-        const { tabs } = await import("../src/sheets.js");
-        await tabs(e.CHECK_SPREADSHEET_ID);
-      },
-    ]);
+    checks.push(["Google credential token exchange", async () => {
+      const { checkCredentials } = await import("../src/sheets.js");
+      await checkCredentials();
+    }]);
+    if (e.CHECK_SPREADSHEET_ID) checks.push(["Google Sheets read access", async () => {
+      const { tabs } = await import("../src/sheets.js");
+      await tabs(e.CHECK_SPREADSHEET_ID);
+    }]);
+    else console.log("SKIP Google Sheets target access: no CHECK_SPREADSHEET_ID; user must share/link a sheet");
   }
   for (const [name, fn] of checks) {
     try {

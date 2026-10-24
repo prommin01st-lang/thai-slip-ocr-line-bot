@@ -16,7 +16,7 @@ node scripts/check-env.mjs --production --online
 docker compose exec -T bot node scripts/check-env.mjs --production --online
 ```
 
-The online check reads LINE bot/webhook configuration, OCR health/auth flag, S3 bucket access and, when configured, tabs from `CHECK_SPREADSHEET_ID`. It sends no LINE messages. OCR health does not prove token equality; the signed end-to-end smoke test must also read a slip. S3 HEAD does not prove write/delete permission or bucket privacy; verify those independently before enabling evidence.
+The online check reads LINE bot/webhook configuration, OCR health/auth flag, S3 bucket access, Google credential token exchange and, when configured, tabs from `CHECK_SPREADSHEET_ID`. Without a target sheet, per-sheet access is explicitly skipped; users must share/link their own sheet. It sends no LINE messages. OCR health does not prove token equality; the signed end-to-end smoke test must also read a slip. S3 HEAD does not prove write/delete permission or bucket privacy; verify those independently before enabling evidence.
 
 After changing `.env`, use `docker compose up -d`; `restart` retains old environment values. Back up before a code/schema upgrade. Migration 8 is additive and runs in a transaction. A rollback should use the pre-upgrade backup when the previous code cannot read the new schema.
 
@@ -56,3 +56,9 @@ On peq the public bot endpoint uses a dedicated Cloudflare Tunnel at `https://sl
 ## Dedicated Cloudflare subdomain
 
 Use `COMPOSE_FILE=docker-compose.yml:compose.storage.yml:compose.cloudflare.yml` on peq. The new `slipingman` tunnel routes `slipingman.petanque21st.com` to `http://bot:3000` on this project's Docker network. Existing website and ContextGate tunnels are not changed. Set `CLOUDFLARE_TUNNEL_CONFIG=/etc/slipingman/cloudflared.yml` and `CLOUDFLARE_TUNNEL_CREDENTIALS` to the dedicated credential JSON path on the VM. Only that tunnel's credential file is mounted into the connector; the account certificate remains on the host. Set `PUBLIC_URL=https://slipingman.petanque21st.com` before starting the bot. Tailscale is used for SSH administration; Funnel is not required.
+
+## VM snapshots
+
+`sudo scripts/backup-stack.sh` creates a full, consistent snapshot of this project's `bot-data` (including live WAL) and `evidence-data` volumes in `/var/backups/slipingman`, mode 600. It briefly pauses **only bot and storage** while copying, and always resumes them on exit/error. The tunnel may briefly wait during that window. Seven full snapshots are retained; daily application DB backups retain fourteen. Schedule full snapshots outside active hours and monitor disk usage. Copy archives securely off the VM for protection against VM/disk loss; no off-host destination is configured automatically.
+
+Restore with the app stopped, into **new** Docker volumes first; extract the `bot/` and `evidence/` trees preserving ownership. Inspect SQLite integrity and expected row counts, and verify signed S3 reads using the matching VM credentials before switching volumes. Do not overlay a restored DB/WAL onto a running volume. The archive contains private application data and S3 metadata; protect it accordingly. LINE/Google `.env` and Cloudflare host credentials are not included in this archive.
