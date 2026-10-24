@@ -1,0 +1,10 @@
+[Unit]
+Description=SlipingMan verified SQLite backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/slipingman
+ExecStart=/usr/bin/docker compose exec -T bot node scripts/backup.mjs --keep 14
+TimeoutStartSec=15min

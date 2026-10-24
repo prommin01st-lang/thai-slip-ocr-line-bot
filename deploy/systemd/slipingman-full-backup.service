@@ -1,0 +1,11 @@
+[Unit]
+Description=SlipingMan consistent SQLite and private storage snapshot
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/slipingman
+ExecStart=/bin/bash /opt/slipingman/scripts/backup-stack.sh
+TimeoutStartSec=30min
+Nice=10
