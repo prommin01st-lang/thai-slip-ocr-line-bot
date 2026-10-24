@@ -1,0 +1,20 @@
+# Dedicated tunnel; no changes to other projects' Cloudflare connectors.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.3
+    restart: unless-stopped
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    volumes:
+      - ${CLOUDFLARE_TUNNEL_CONFIG:?Set config path}:/etc/cloudflared/config.yml:ro
+      - ${CLOUDFLARE_TUNNEL_CREDENTIALS:?Set tunnel credentials path}:/etc/cloudflared/creds.json:ro
+    depends_on:
+      bot:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
