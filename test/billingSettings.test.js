@@ -38,8 +38,8 @@ const empty = await fire(button("act=issuer"));
 assert.ok(empty.includes("กรอกข้อมูลผู้ออก"));
 assert.ok(empty.includes("act=issueredit"));
 const editor = await fire(button("act=issueredit"));
-assert.ok(editor.includes("ชื่อร้าน | ที่อยู่ | โทรศัพท์"));
-assert.ok(editor.includes("openKeyboard"));
+assert.ok(editor.includes("ชื่อ-นามสกุล"));
+assert.ok(empty.includes("openKeyboard"));
 await fire(text("ผู้ออก ชื่ออย่างเดียว"));
 assert.equal(D.getIssuer(u), null);
 const saved = await fire(

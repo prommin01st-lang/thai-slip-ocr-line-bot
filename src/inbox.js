@@ -74,6 +74,8 @@ export class Inbox {
   prune() {
     const before = this.now() - 7 * 24 * 3600000;
     atomic(this.db, () => {
+      this.db.prepare(`DELETE FROM prefs WHERE key='issuer_setup' AND
+        CASE WHEN json_valid(value) THEN COALESCE(json_extract(value,'$.expiresAt'),0) ELSE 0 END <= ?`).run(this.now());
       for (const table of [
         "pending_inputs",
         "attachment_intents",

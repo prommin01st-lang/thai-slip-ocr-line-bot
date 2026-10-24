@@ -287,8 +287,9 @@ Use `เก็บต้นฉบับ เปิด` to explicitly retain future
 to stop. Older images cannot be recovered if they were not stored at the time.
 
 In LINE, type `ตั้งค่า` → **ข้อมูลผู้ออก** to view/add/edit issuer details, or
-**บิลและใบเสร็จ** to create documents. The editor opens the keyboard and pre-fills
-existing values when short enough; sending the edited message saves the profile.
+**บิลและใบเสร็จ** to create documents. The editor asks for name, address and phone one at a time. Thai full names may
+contain spaces. Phone is optional; review the summary and press Save to update the profile.
+The draft survives restarts for ten minutes and can be cancelled or edited before saving.
 Newly saved issuer details affect future documents only. Reopen `ตั้งค่า` to see
 updated controls; older cards in chat keep their original layout.
 

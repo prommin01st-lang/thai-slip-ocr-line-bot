@@ -1,3 +1,4 @@
+import * as issuerSetup from "./issuerSetup.js";
 import { UserError } from "./errors.js";
 import { config } from "./config.js";
 import * as L from "./ledger.js";
@@ -102,24 +103,15 @@ export function evidenceCard(u, id, page = 0) {
     ),
   ];
 }
-const issuerFill = (userId) => {
-  const issuer = D.getIssuer(userId);
-  const existing = issuer
-    ? `ผู้ออก ${issuer.name} | ${issuer.address} | ${issuer.phone || ""}`
-    : "ผู้ออก ";
-  return existing.length <= 300 ? existing : "ผู้ออก ";
-};
-export function issuerCard(userId, { editing = false, saved = false } = {}) {
+export function issuerCard(userId, { saved = false } = {}) {
   const issuer = D.getIssuer(userId);
   return card({
     title: saved ? "บันทึกข้อมูลผู้ออกแล้ว" : "ข้อมูลผู้ออกเอกสาร",
     emoji: saved ? "✅" : "🏢",
     tone: saved ? "success" : "info",
-    text: editing
-      ? "แก้ข้อความในช่องพิมพ์ แล้วกดส่งเพื่อบันทึก\nใช้รูปแบบ: ผู้ออก ชื่อร้าน | ที่อยู่ | โทรศัพท์"
-      : issuer
-        ? "ข้อมูลนี้จะใช้กับเอกสารฉบับใหม่ เอกสารที่ออกแล้วจะคงข้อมูลเดิม"
-        : "ยังไม่ได้ตั้งข้อมูลผู้ออก กดกรอกข้อมูลด้านล่างได้เลยครับ",
+    text: issuer
+      ? "ข้อมูลนี้จะใช้กับเอกสารฉบับใหม่ เอกสารที่ออกแล้วจะคงข้อมูลเดิม"
+      : "กดกรอกข้อมูลด้านล่าง ระบบจะถามชื่อ ที่อยู่ และโทรศัพท์ทีละช่องครับ",
     rows: issuer
       ? [
           { label: "ชื่อร้าน/บริษัท", value: issuer.name },
@@ -127,21 +119,69 @@ export function issuerCard(userId, { editing = false, saved = false } = {}) {
           { label: "โทรศัพท์", value: issuer.phone || "ไม่ระบุ" },
         ]
       : [],
-    notes: editing
-      ? [
-          "ตัวอย่าง: ผู้ออก ร้านตัวอย่าง | 123 ถนนสุขุมวิท กรุงเทพฯ | 0812345678",
-          "ต้องมีชื่อและที่อยู่ โทรศัพท์เว้นว่างได้",
-        ]
-      : [],
     actions: [
       {
         label: issuer ? "แก้ไขข้อมูล" : "กรอกข้อมูลผู้ออก",
         data: "act=issueredit",
-        fill: issuerFill(userId),
+        ...(issuer ? { fill: issuer.name } : { inputOption: "openKeyboard" }),
         primary: true,
       },
       { label: "บิลและใบเสร็จ", data: "act=billing" },
       { label: "กลับตั้งค่า", data: "act=settings" },
+    ],
+  });
+}
+
+export function issuerWizardCard(draft, error = null) {
+  const { stage, fields } = draft;
+  const action = (name) => `act=${name}&f=${draft.id}&s=${stage}`;
+  const titles = {
+    name: "ชื่อผู้ออก (1/3)",
+    address: "ที่อยู่ผู้ออก (2/3)",
+    phone: "โทรศัพท์ (3/3)",
+    confirm: "ตรวจข้อมูลผู้ออก",
+  };
+  const descriptions = {
+    name: "พิมพ์ชื่อ-นามสกุล หรือชื่อร้านได้เลย เว้นวรรคระหว่างชื่อและนามสกุลได้ เช่น สมชาย ใจดี",
+    address: "พิมพ์ที่อยู่ที่ต้องการแสดงในเอกสารได้เลยครับ",
+    phone: "พิมพ์เบอร์โทรศัพท์ หรือกดไม่ระบุโทรศัพท์ได้ครับ",
+    confirm: "ตรวจข้อมูลด้านล่าง แล้วกดบันทึกเพื่อใช้ออกเอกสารฉบับใหม่",
+  };
+  const labels = { name: "ชื่อผู้ออก", address: "ที่อยู่", phone: "โทรศัพท์" };
+  const rows =
+    stage === "confirm"
+      ? [
+          { label: labels.name, value: fields.name },
+          { label: labels.address, value: fields.address },
+          { label: labels.phone, value: fields.phone || "ไม่ระบุ" },
+        ]
+      : fields[stage]
+        ? [{ label: "ข้อมูลเดิม", value: fields[stage] }]
+        : [];
+  return card({
+    title: titles[stage],
+    emoji: "🏢",
+    tone: error ? "warn" : "info",
+    text: descriptions[stage],
+    rows,
+    notes: [
+      ...(error ? [error] : []),
+      "เก็บร่างไว้ 10 นาที ข้อมูลเดิมจะเปลี่ยนเมื่อกดบันทึกเท่านั้น",
+    ],
+    actions: [
+      ...(stage === "confirm"
+        ? [{ label: "บันทึกข้อมูล", data: action("issuersave"), primary: true }]
+        : []),
+      ...(stage !== "confirm" && fields[stage]
+        ? [{ label: "ใช้ข้อมูลเดิม", data: action("issuerkeep") }]
+        : []),
+      ...(stage === "phone"
+        ? [{ label: "ไม่ระบุโทรศัพท์", data: action("issuerphoneomit") }]
+        : []),
+      ...(stage !== "name"
+        ? [{ label: "ย้อนกลับ", data: action("issuerback") }]
+        : []),
+      { label: "ยกเลิก", data: action("issuercancel") },
     ],
   });
 }
@@ -195,7 +235,8 @@ export const billingCard = (userId, { guide = false } = {}) =>
 // Return true when consumed, so an attachment never falls through to OCR / a new expense.
 export async function handleFinance(event, { respond, downloadContent }) {
   const u = event.source?.userId;
-  if (!u) return false;
+  if (!u || (event.type && !["message", "postback"].includes(event.type)))
+    return false;
   const text =
     event.message?.type === "text" ? (event.message.text || "").trim() : "";
   const p = new URLSearchParams(event.postback?.data || ""),
@@ -206,6 +247,14 @@ export async function handleFinance(event, { respond, downloadContent }) {
     event.message?.type === "image" || event.message?.type === "file"
       ? eventValue(L.db(), -2, () => E.attachmentIntent(u)?.txn_id ?? null)
       : null;
+  const draft = eventValue(L.db(), -3, () => issuerSetup.getDraft(u));
+  const issuerActs = [
+    "issuersave",
+    "issuerback",
+    "issuercancel",
+    "issuerkeep",
+    "issuerphoneomit",
+  ];
   const attachmentAct = [
     "attach",
     "evidence",
@@ -217,6 +266,7 @@ export async function handleFinance(event, { respond, downloadContent }) {
   const settingsAct = [
     "issuer",
     "issueredit",
+    ...issuerActs,
     "billing",
     "billinghelp",
     "billprompt",
@@ -226,16 +276,90 @@ export async function handleFinance(event, { respond, downloadContent }) {
     /^(ผู้ออก(?:\s|$)|ข้อมูลผู้ออก(?:เอกสาร)?$|ตั้งค่าผู้ออก(?:เอกสาร)?$|บิลและใบเสร็จ$|บิล(?:\s|$)|ใบเสร็จ(?:\s|$)|เอกสาร(?:\s|$)|แก้เอกสาร\s|แนบหลักฐาน\s|หลักฐาน\s|ยกเลิกแนบ$|เก็บต้นฉบับ(?:\s|$))/.test(
       text,
     );
-  if (!target && !attachmentAct && !docAct && !settingsAct && !command)
+  if (
+    !target &&
+    !attachmentAct &&
+    !docAct &&
+    !settingsAct &&
+    !command &&
+    !draft
+  )
     return false;
   try {
     if (!L.hasConsent(u)) throw new UserError("กรุณาพิมพ์ “ยินยอม” ก่อนใช้งาน");
+    if (act === "issueredit") {
+      await respond(event, issuerWizardCard(issuerSetup.begin(u)));
+      return true;
+    }
+    if (issuerActs.includes(act)) {
+      const expected = { id: p.get("f"), stage: p.get("s") };
+      if (act === "issuercancel") {
+        if (!expected.id || !issuerSetup.cancel(u, expected.id))
+          throw new UserError("คำขอเดิมหมดอายุ กดกรอกข้อมูลใหม่ครับ");
+        await respond(event, issuerCard(u));
+        return true;
+      }
+      if (act === "issuersave") {
+        issuerSetup.save(u, expected.id);
+        await respond(event, issuerCard(u, { saved: true }));
+        return true;
+      }
+      if (!draft || draft.id !== expected.id || draft.stage !== expected.stage)
+        throw new UserError("ขั้นตอนนี้เปลี่ยนแล้ว กดปุ่มจากการ์ดล่าสุดครับ");
+      const next =
+        act === "issuerback"
+          ? issuerSetup.back(u, expected)
+          : issuerSetup.advance(
+              u,
+              expected,
+              act === "issuerphoneomit" ? "" : draft.fields[draft.stage],
+            );
+      await respond(event, issuerWizardCard(next));
+      return true;
+    }
+    const navigation =
+      /^(ตั้งค่า|settings|ช่วยเหลือ|help|บิล|ใบเสร็จ|บิลและใบเสร็จ|เอกสาร|ข้อมูลของฉัน|ลบข้อมูลของฉัน|สรุป|รายการ|ผู้ออก|ข้อมูลผู้ออก(?:เอกสาร)?|ตั้งค่าผู้ออก(?:เอกสาร)?)$/i.test(
+        text,
+      );
+    const legacyIssuer = /^ผู้ออก\s/.test(text) && text.includes("|");
+    if (draft && (act || navigation || legacyIssuer)) {
+      issuerSetup.cancel(u, draft.id);
+      if (!target && !attachmentAct && !docAct && !settingsAct && !command)
+        return false;
+    }
+    if (draft && !act && !navigation && !legacyIssuer) {
+      if (event.message?.type !== "text") {
+        await respond(
+          event,
+          issuerWizardCard(
+            draft,
+            "ขั้นตอนนี้กรุณาส่งข้อความ หรือกดยกเลิกก่อนแนบไฟล์",
+          ),
+        );
+        return true;
+      }
+      if (/^(ยกเลิก|cancel)$/i.test(text)) {
+        issuerSetup.cancel(u, draft.id);
+        await respond(event, issuerCard(u));
+        return true;
+      }
+      const value =
+        draft.stage === "phone" && /^(ข้าม|ไม่ระบุ|ไม่มี|-)$/i.test(text)
+          ? ""
+          : draft.stage === "name"
+            ? text.replace(/^ผู้ออก\s+/, "")
+            : text;
+      await respond(
+        event,
+        issuerWizardCard(issuerSetup.advance(u, draft, value)),
+      );
+      return true;
+    }
     if (
       act === "issuer" ||
-      act === "issueredit" ||
       /^(ผู้ออก|ข้อมูลผู้ออก(?:เอกสาร)?|ตั้งค่าผู้ออก(?:เอกสาร)?)$/.test(text)
     ) {
-      await respond(event, issuerCard(u, { editing: act === "issueredit" }));
+      await respond(event, issuerCard(u));
       return true;
     }
     if (
@@ -370,6 +494,16 @@ export async function handleFinance(event, { respond, downloadContent }) {
       return true;
     }
     if (/^ผู้ออก\s/.test(text)) {
+      if (!text.includes("|")) {
+        const started = issuerSetup.begin(u);
+        await respond(
+          event,
+          issuerWizardCard(
+            issuerSetup.advance(u, started, text.replace(/^ผู้ออก\s+/, "")),
+          ),
+        );
+        return true;
+      }
       D.setIssuer(u, text.replace(/^ผู้ออก\s+/, ""));
       await respond(event, issuerCard(u, { saved: true }));
       return true;
@@ -441,6 +575,11 @@ export async function handleFinance(event, { respond, downloadContent }) {
     return true;
   } catch (err) {
     if (!(err instanceof UserError) && event._durable) throw err;
+    const activeDraft = issuerSetup.getDraft(u);
+    if (activeDraft && err instanceof UserError) {
+      await respond(event, issuerWizardCard(activeDraft, err.message));
+      return true;
+    }
     await respond(
       event,
       card({

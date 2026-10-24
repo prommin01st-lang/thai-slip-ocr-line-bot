@@ -3,16 +3,38 @@ import * as L from "./ledger.js";
 import { atomic, toCents, nowLocal } from "./db.js";
 import { replayWrite } from "./replay.js";
 
-const clean = (s, max = 500) => {
-  if (
-    typeof s !== "string" ||
-    !s.trim() ||
-    s.length > max ||
-    /[\x00-\x08\x0b-\x1f]/.test(s)
-  )
-    throw new UserError("ข้อความว่าง ยาวเกิน หรือมีอักขระที่ใช้ไม่ได้");
-  return s.trim();
+const clean = (s, max = 500, label = "ข้อความ") => {
+  if (typeof s !== "string" || !s.trim())
+    throw new UserError(`${label}ยังว่าง กรุณากรอกข้อมูลช่องนี้`);
+  const value = s.trim().replace(/\r\n?/g, "\n");
+  if (value.length > max)
+    throw new UserError(`${label}ยาวเกิน ${max} ตัวอักษร`);
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
+    throw new UserError(`${label}มีอักขระควบคุมที่ใช้ไม่ได้ กรุณาพิมพ์ใหม่`);
+  return value;
 };
+export function validateIssuerField(field, value) {
+  const fields = {
+    name: [120, "ชื่อผู้ออก"],
+    address: [500, "ที่อยู่ผู้ออก"],
+    phone: [40, "เบอร์โทรศัพท์"],
+  };
+  if (!fields[field]) throw new UserError("ไม่พบช่องข้อมูลนี้");
+  if (field === "phone" && (value == null || String(value).trim() === ""))
+    return "";
+  return clean(value, ...fields[field]);
+}
+export function saveIssuer(userId, fields) {
+  if (!L.hasConsent(userId)) throw new UserError("กรุณาให้ความยินยอมก่อน");
+  const profile = Object.fromEntries(
+    ["name", "address", "phone"].map((k) => [
+      k,
+      validateIssuerField(k, fields[k]),
+    ]),
+  );
+  L.setPref(userId, "document_issuer", JSON.stringify(profile));
+  return profile;
+}
 export function getIssuer(userId) {
   try {
     return JSON.parse(L.getPref(userId, "document_issuer") || "null");
@@ -22,16 +44,18 @@ export function getIssuer(userId) {
 }
 
 export function setIssuer(userId, text) {
-  if (!L.hasConsent(userId)) throw new UserError("กรุณาให้ความยินยอมก่อน");
-  const [name, address, phone = ""] = text.split("|").map((s) => s.trim());
-  L.setPref(
-    userId,
-    "document_issuer",
-    JSON.stringify({
-      name: clean(name, 120),
-      address: clean(address, 500),
-      phone: phone.slice(0, 40),
-    }),
+  const parts = text.split("|");
+  if (parts.length < 2)
+    throw new UserError(
+      "ยังไม่ได้ระบุที่อยู่ ใช้รูปแบบ ชื่อ | ที่อยู่ | โทรศัพท์ หรือกดกรอกข้อมูลทีละช่อง",
+    );
+  if (parts.length > 3)
+    throw new UserError(
+      "กรอก 3 ช่องคั่นด้วย | ได้แก่ ชื่อ | ที่อยู่ | โทรศัพท์",
+    );
+  const [name, address, phone = ""] = parts;
+  return replayWrite(L.db(), () =>
+    atomic(L.db(), () => saveIssuer(userId, { name, address, phone })),
   );
 }
 export function parseDocument(text) {

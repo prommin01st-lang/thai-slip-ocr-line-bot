@@ -242,7 +242,8 @@ function button(a, tone) {
     action = { type: "postback", label: a.label, data: a.data ?? "act=noop",
                inputOption: "openKeyboard", fillInText: a.fill };
   } else if (a.data) {
-    action = { type: "postback", label: a.label, data: a.data, displayText: a.displayText };
+    action = { type: "postback", label: a.label, data: a.data, displayText: a.displayText,
+               ...(a.inputOption ? {inputOption:a.inputOption} : {}) };
   } else {
     action = { type: "message", label: a.label, text: a.text };
   }
